@@ -3,11 +3,13 @@
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 
-from app.engine.actions import ActionType
+from app.engine.actions import ActionType, DecisionScope
 from app.engine.evidence import Evidence, EvidenceSource
 from app.engine.features import (
     actionability,
+    addresses_trigger_subject,
     compute_features,
     conversation_relevance,
     engagement_potential,
@@ -106,6 +108,48 @@ def test_merchant_relevance_counts_merchant_and_customer_facts() -> None:
     assert merchant_relevance([ev(EvidenceSource.MERCHANT), ev(EvidenceSource.CUSTOMER), ev(EvidenceSource.CATEGORY)]) == 0.5
     assert merchant_relevance([ev(EvidenceSource.MERCHANT)] * 20) == 1.0
     assert merchant_relevance([ev()], adjustment=-1.0) == 0.0
+
+
+def test_addressing_another_party_than_the_trigger_forgoes_one_fact_step() -> None:
+    facts = [ev(EvidenceSource.MERCHANT), ev(EvidenceSource.CUSTOMER)]
+
+    assert merchant_relevance(facts) == merchant_relevance(facts, addresses_trigger_subject=True) == 0.5
+    assert merchant_relevance(facts, addresses_trigger_subject=False) == 0.4
+    assert merchant_relevance([ev()], adjustment=-1.0, addresses_trigger_subject=False) == 0.0
+    assert merchant_relevance([ev(EvidenceSource.MERCHANT)] * 20, addresses_trigger_subject=False) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("trigger_id", "trigger_scope"),
+    [("trg_003_recall_due_priya", "customer"), ("trg_004_perf_dip_bharat", "merchant")],
+)
+def test_trigger_subject_is_the_declared_trigger_scope_in_both_directions(trigger_id: str, trigger_scope: str) -> None:
+    ctx = seed_context(trigger_id)
+    other = DecisionScope.MERCHANT if trigger_scope == "customer" else DecisionScope.CUSTOMER
+
+    assert ctx.trigger["scope"] == trigger_scope
+    assert addresses_trigger_subject(ctx, DecisionScope(trigger_scope))
+    assert not addresses_trigger_subject(ctx, other)
+
+
+@pytest.mark.parametrize("declared", [None, "", "everyone"])
+def test_every_context_declares_a_trigger_scope(declared: str | None) -> None:
+    with pytest.raises(ValidationError, match="scope"):
+        ctx_with("trg_003_recall_due_priya", scope=declared)
+
+
+def test_compute_features_discounts_only_merchant_relevance_for_the_other_party() -> None:
+    ctx = seed_context("trg_003_recall_due_priya")
+    kwargs = dict(action=ActionType.DRAFT_MESSAGE, evidence=[ev(EvidenceSource.CUSTOMER, 0.9)], topic=tokens("recall"))
+
+    direct = compute_features(ctx, **kwargs, scope=DecisionScope.CUSTOMER)
+    indirect = compute_features(ctx, **kwargs, scope=DecisionScope.MERCHANT)
+
+    assert compute_features(ctx, **kwargs) == direct
+    assert (direct.merchant_relevance, indirect.merchant_relevance) == (0.4, 0.3)
+    assert {k: v for k, v in indirect.as_fields().items() if k != "merchant_relevance"} == {
+        k: v for k, v in direct.as_fields().items() if k != "merchant_relevance"
+    }
 
 
 def test_actionability_rises_with_assets() -> None:

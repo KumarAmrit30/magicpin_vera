@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from app.engine.actions import ActionType
+from app.engine.actions import ActionType, DecisionScope
 from app.engine.evidence import Evidence, EvidenceSource
 
 if TYPE_CHECKING:
@@ -198,10 +198,23 @@ def time_pressure(ctx: "CandidateGenerationContext", action: ActionType, deadlin
     return 0.0
 
 
-def merchant_relevance(evidence: Sequence[Evidence], adjustment: float = 0.0) -> float:
-    """Base relevance plus a step per supporting merchant/customer fact, plus a handler adjustment."""
+def merchant_relevance(evidence: Sequence[Evidence], adjustment: float = 0.0, *, addresses_trigger_subject: bool = True) -> float:
+    """How directly the candidate concerns the situation that raised the trigger.
+
+    Base relevance plus a step per supporting merchant/customer fact, plus a
+    handler adjustment. A candidate addressed to a different party than the
+    trigger's declared ``scope`` (e.g. a merchant-facing draft for a
+    customer-scoped trigger) reaches that situation only at one remove and
+    forgoes one fact step.
+    """
     facts = sum(1 for e in evidence if e.source in (EvidenceSource.MERCHANT, EvidenceSource.CUSTOMER))
-    return _unit(RELEVANCE_BASE + RELEVANCE_PER_FACT * facts + adjustment)
+    indirect = 0.0 if addresses_trigger_subject else RELEVANCE_PER_FACT
+    return _unit(RELEVANCE_BASE + RELEVANCE_PER_FACT * facts + adjustment - indirect)
+
+
+def addresses_trigger_subject(ctx: "CandidateGenerationContext", scope: DecisionScope) -> bool:
+    """True when ``scope`` is the party named by the trigger's declared ``scope`` (validated by the context)."""
+    return ctx.trigger["scope"] == scope.value
 
 
 def conversation_relevance(
@@ -278,15 +291,17 @@ def compute_features(
     assets: int = 0,
     continues_request: bool = False,
     time_pressure_override: float | None = None,
+    scope: DecisionScope | None = None,
 ) -> CandidateFeatures:
-    """All seven features for one candidate."""
+    """All seven features for one candidate. ``scope`` is the candidate's decision scope (``None``: not known)."""
     pressure = time_pressure(ctx, action, deadline)
     if time_pressure_override is not None and action is not ActionType.NO_ACTION:
         pressure = time_pressure_override
+    direct = scope is None or addresses_trigger_subject(ctx, scope)
     return CandidateFeatures(
         urgency=urgency(ctx, action),
         time_pressure=pressure,
-        merchant_relevance=merchant_relevance(evidence, relevance_adjustment),
+        merchant_relevance=merchant_relevance(evidence, relevance_adjustment, addresses_trigger_subject=direct),
         conversation_relevance=conversation_relevance(ctx, action, topic, continues_request=continues_request),
         actionability=actionability(action, assets),
         evidence_strength=evidence_strength(evidence),

@@ -8,7 +8,10 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
+import pytest
+
 from app.engine import ActionType, CTAType, DecisionPlan, DecisionScope, SendAs
+from app.engine import features as features_module
 from app.engine.candidates import CandidateGenerationContext, generate_candidates
 from app.engine.eligibility import EligibilityResult, evaluate_candidates
 from app.engine.selection import rank_eligible, select_decision
@@ -77,6 +80,17 @@ def test_expanded_dataset_yields_one_valid_plan_per_trigger(expanded: dict[str, 
         _assert_valid(plan, expanded_context(expanded, trigger_id))
     actions = Counter(plan.action for plan in plans.values())
     assert actions[A.NO_ACTION] < 50
+
+
+def test_scope_alignment_leaves_merchant_triggers_alone_and_keeps_drafts_competing(expanded: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    ranked = {tid: rank_eligible(_results(expanded_context(expanded, tid))) for tid in sorted(expanded["triggers"])}
+    monkeypatch.setattr(features_module, "addresses_trigger_subject", lambda ctx, scope: True)
+
+    for trigger_id, ranking in ranked.items():
+        if expanded["triggers"][trigger_id]["scope"] == "merchant":
+            assert ranking == rank_eligible(_results(expanded_context(expanded, trigger_id))), trigger_id
+        else:
+            assert A.DRAFT_MESSAGE in {r.candidate.action for r in ranking}, trigger_id
 
 
 def test_expanded_selection_is_deterministic(expanded: dict[str, Any]) -> None:

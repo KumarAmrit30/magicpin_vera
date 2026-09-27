@@ -105,6 +105,7 @@ def realize(ctx: CandidateGenerationContext, archetype: TriggerArchetype, propos
         assets=proposal.assets,
         continues_request=proposal.continues_request,
         time_pressure_override=proposal.time_pressure_override,
+        scope=scope,
     )
     return DecisionCandidate(
         trigger_id=ctx.trigger_id,

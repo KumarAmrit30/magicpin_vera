@@ -434,7 +434,7 @@ All features are rounded to 4 decimals and lie in [0, 1].
 |---|---|
 | urgency | `trigger.urgency / 5`; 0 if absent |
 | time_pressure | nearest of `trigger.expires_at` and a fact-backed deadline (due date, run-out date, festival date, match time, renewal date), stepped: ≤24h 1.0, ≤72h 0.8, ≤7d 0.6, ≤14d 0.4, ≤30d 0.2, else 0; passed deadline → 0; `appointment_tomorrow` → 1.0 |
-| merchant_relevance | `0.3 + 0.1 × (merchant/customer facts cited)` |
+| merchant_relevance | `0.3 + 0.1 × (merchant/customer facts cited)`, `− 0.1` when the candidate's scope differs from `trigger.scope` (see below) |
 | conversation_relevance | 1.0 continues an explicit merchant request; 0.9 topical and merchant engaged (0.3 if the action would only restate it); 0.6 topical; 0.3 engaged but off-topic; 0.1 cold; 0 with no conversation |
 | actionability | per-action base (ask 0.8, alert 0.7, insight 0.6, recommend/customer send/draft message 0.5, other drafts 0.4) `+ 0.15 × concrete assets` (offer, slots, required step, ...) |
 | evidence_strength | `0.7 × max(importance) + 0.3 × min(1, (count − 1) / 4)` |
@@ -445,6 +445,31 @@ relevance and engagement, and full actionability. They compete on
 merchant relevance and evidence strength, i.e. on how strongly the state
 supports staying quiet. Topic matching uses normalized word sets (`tokens`), not
 substring search.
+
+**Trigger-scope alignment in `merchant_relevance`.** `merchant_relevance`
+measures how directly a candidate concerns the situation that raised the
+trigger. Each grounded merchant or customer fact it cites adds one step of 0.1.
+A trigger's `scope` (`merchant` | `customer`, required by the brief's
+`TriggerContext`) names the party whose situation raised it. Customer context
+exists only for `scope=customer`, and customer-scoped triggers (recall,
+refill, lapse, appointment, trial follow-up) are sent `merchant_on_behalf`.
+A candidate addressed to a different party than the declared scope reaches
+that situation only at one remove. For example, a merchant-facing
+`DRAFT_MESSAGE` for Priya's recall is about Priya's recall only through the
+merchant, so it forgoes one fact step: `− 0.1`, the feature's own unit,
+equal to 2 points at weight 20.
+
+The rule depends only on the two scopes, never on the action type, and it
+applies in both directions. It is a discount on the indirect candidate, not
+a bonus for alignment. A bonus would saturate at 1.0 for some candidates and
+move them unevenly. With the discount, every directly aligned candidate keeps
+exactly its previous value. Today merchant triggers produce only
+merchant-scoped candidates, so their features, scores and winners are
+unchanged. On customer triggers, the customer send and the draft share
+evidence, assets, topic and deadline, so the discount decides between them
+only when their engagement estimates are within 2 points. A draft still wins
+when the merchant's engagement clearly outweighs the customer's, e.g. an
+engaged merchant and a churned customer on a winback.
 
 ### Phase 2B non-goals (not implemented)
 

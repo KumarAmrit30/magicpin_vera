@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from app.engine import ActionType, CTAType, DecisionCandidate, DecisionPlan, DecisionScope, SendAs, make_plan_id
+from app.engine import features as features_module
 from app.engine import selection as selection_module
 from app.engine.candidates import CandidateGenerationContext, generate_candidates
 from app.engine.eligibility import EligibilityReason, EligibilityReasonCode, EligibilityResult, evaluate_candidates
@@ -22,6 +23,7 @@ from app.engine.scoring import rank_candidates, score_candidate
 from app.engine.selection import (
     NO_CANDIDATES_OBJECTIVE,
     NO_ELIGIBLE_OBJECTIVE,
+    RankedCandidate,
     UnplannableTriggerError,
     decision_confidence,
     plan_from_candidate,
@@ -43,6 +45,7 @@ FESTIVAL = "trg_006_festival_diwali"
 IPL = "trg_010_ipl_match_delhi"
 SEASONAL = "trg_014_seasonal_acquisition_dip_powerhouse"
 CUSTOMER_WINBACK = "trg_015_winback_rashmi"
+REFILL = "trg_019_chronic_refill_grandfather"
 PERF_SPIKE = "trg_024_perf_spike_zen"
 
 
@@ -344,7 +347,7 @@ def test_identical_candidates_produce_identical_plans() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("trigger_id", [DIGEST, FESTIVAL, PERF_SPIKE, CUSTOMER_WINBACK, "trg_023_competitor_opened_dentist"])
+@pytest.mark.parametrize("trigger_id", [DIGEST, FESTIVAL, PERF_SPIKE, CUSTOMER_WINBACK, RECALL, REFILL, "trg_023_competitor_opened_dentist"])
 def test_winner_is_invariant_under_every_input_permutation(trigger_id: str) -> None:
     context = seed_context(trigger_id)
     results = list(pipeline(context))
@@ -414,6 +417,70 @@ def test_real_customer_trigger_ranking_follows_scores() -> None:
 
     assert {r.candidate.scope for r in ranking} == {DecisionScope.CUSTOMER, DecisionScope.MERCHANT}
     assert [r.score for r in ranking] == sorted((r.score for r in ranking), reverse=True)
+
+
+# --------------------------------------------------------------------------- #
+# Trigger-scope alignment (merchant_relevance)
+# --------------------------------------------------------------------------- #
+
+
+def _ignoring_scope(monkeypatch: pytest.MonkeyPatch, context: CandidateGenerationContext) -> list[RankedCandidate]:
+    with monkeypatch.context() as patch:
+        patch.setattr(features_module, "addresses_trigger_subject", lambda ctx, scope: True)
+        return rank_eligible(pipeline(context))
+
+
+@pytest.mark.parametrize(
+    ("trigger_id", "action", "offer"),
+    [
+        (REFILL, A.SEND_CUSTOMER_REMINDER, None),  # T07, Case Study 10
+        (CUSTOMER_WINBACK, A.SEND_CUSTOMER_WINBACK, None),  # T13, Case Study 8
+        (RECALL, A.SEND_CUSTOMER_REMINDER, "o_meera_001"),  # T28, Case Study 2
+    ],
+)
+def test_customer_facing_case_studies_select_the_customer_send(trigger_id: str, action: ActionType, offer: str | None) -> None:
+    context = seed_context(trigger_id)
+    ranking = rank_eligible(pipeline(context))
+    plan = select_decision(context, pipeline(context))
+
+    assert (plan.scope, plan.send_as, plan.action, plan.selected_offer_id) == (DecisionScope.CUSTOMER, SendAs.MERCHANT_ON_BEHALF, action, offer)
+    assert plan.customer_id == context.customer_id
+    assert A.DRAFT_MESSAGE in {r.candidate.action for r in ranking[1:]}
+
+
+def test_merchant_facing_draft_still_wins_a_customer_trigger_on_its_features() -> None:
+    parts = seed_context_parts(CUSTOMER_WINBACK)
+    parts["customer"]["state"] = "churned"
+    parts["merchant"]["signals"] = [*parts["merchant"]["signals"], "engaged_in_last_24h"]
+    context = CandidateGenerationContext(**parts, now=SEED_NOW)
+
+    first, second = rank_eligible(pipeline(context))[:2]
+
+    assert (first.candidate.action, first.candidate.scope) == (A.DRAFT_MESSAGE, DecisionScope.MERCHANT)
+    assert second.candidate.action is A.SEND_CUSTOMER_WINBACK
+    assert first.score > second.score
+    assert first.candidate.merchant_relevance < second.candidate.merchant_relevance
+
+
+@pytest.mark.parametrize("trigger_id", [DIGEST, FESTIVAL, IPL, PERF_SPIKE, "trg_004_perf_dip_bharat", "trg_023_competitor_opened_dentist"])
+def test_merchant_trigger_rankings_are_untouched_by_scope_alignment(monkeypatch: pytest.MonkeyPatch, trigger_id: str) -> None:
+    context = seed_context(trigger_id)
+
+    assert context.trigger["scope"] == "merchant"
+    assert rank_eligible(pipeline(context)) == _ignoring_scope(monkeypatch, context)
+
+
+@pytest.mark.parametrize("trigger_id", [RECALL, CUSTOMER_WINBACK, REFILL])
+def test_scope_alignment_moves_only_the_other_partys_candidates_by_one_fact_step(monkeypatch: pytest.MonkeyPatch, trigger_id: str) -> None:
+    context = seed_context(trigger_id)
+    before = {(r.candidate.action, r.candidate.selected_offer_id): r.candidate for r in _ignoring_scope(monkeypatch, context)}
+    after = {(r.candidate.action, r.candidate.selected_offer_id): r.candidate for r in rank_eligible(pipeline(context))}
+
+    assert before.keys() == after.keys()
+    for key, candidate in after.items():
+        drop = 0.1 if candidate.scope is DecisionScope.MERCHANT else 0.0
+        assert candidate.merchant_relevance == pytest.approx(before[key].merchant_relevance - drop), key
+        assert candidate.model_copy(update={"merchant_relevance": before[key].merchant_relevance}) == before[key], key
 
 
 def test_per_offer_candidates_are_ranked_independently() -> None:
