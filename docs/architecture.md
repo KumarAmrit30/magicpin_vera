@@ -217,7 +217,7 @@ The decided action handed to the composer: the shared decision fields plus
 prose). `plan_id` is derived when omitted and verified when supplied.
 
 `confidence` is deterministic decision certainty, not a probability. Phase 2A
-only validates and stores it; no confidence algorithm exists yet.
+only validates and stores it; Phase 2D computes it (see below).
 
 ### Scoring
 
@@ -471,3 +471,40 @@ Eligibility never ranks, selects or de-duplicates. It only reads suppression
 (`SuppressionReader.peek`), and writing keys after a send belongs to the commit
 phase. Rules, sources and documented uncertainties are in
 [`phase-2c-eligibility.md`](phase-2c-eligibility.md).
+
+## Candidate Scoring & Winner Selection — Phase 2D
+
+`app/engine/selection.py`: `select_decision(context, eligibility_results) -> DecisionPlan`.
+
+```text
+EligibilityResult[]  ──filter eligible──►  score_candidate()  ──►  rank_candidates()  ──►  winner  ──►  DecisionPlan
+                                          (Phase 2A, unchanged)   (Phase 2A, unchanged)          confidence computed here
+```
+
+- **Eligibility first.** The selector takes Phase 2C `EligibilityResult`s, not raw candidates, and ranks only `eligible=True` ones. A rejected candidate never competes, whatever its score.
+- **Scoring** is the Phase 2A weighted sum: urgency 25, time pressure 15, merchant relevance 20, conversation relevance 15, actionability 10, evidence strength 10, engagement 5 (total 100). Features are used as generated.
+- **Ranking** is the Phase 2A `candidate_sort_key`. The order is: higher score, higher urgency, higher evidence strength, higher conversation relevance, earlier `expires_at` (no expiry last), lexical `trigger_id`, then `action`, `merchant_id`, `customer_id`, `objective`, `suppression_key`, `selected_offer_id` and `cta_type`. It is total, so input order never matters.
+- **No preferences.** No scope, action-type or `NO_ACTION` preference is added. `rank_eligible(results)` returns a debugging view of the ranking: `RankedCandidate(rank, decision_id, score, tie_break, candidate)`.
+- **`NO_ACTION`** competes like any candidate. Its features (zero urgency, time pressure, conversation relevance and engagement; full actionability) mean it competes on merchant relevance and evidence strength.
+- **Fallback when nothing is eligible.** If there are no candidates, or none is eligible, the result is a `NO_ACTION` plan for the context's trigger:
+  - objective `no candidates for this trigger` or `no eligible candidates for this trigger`
+  - no evidence
+  - rationale facts that count candidates and list the rejection codes
+  - priority 0, confidence 1.0 (a forced decision)
+  - scope customer when the trigger names a customer, as in Phase 2B
+
+  If the trigger kind is unmapped there is no archetype, so no plan can be built and `UnplannableTriggerError` is raised.
+- **Plan construction.** The winner's decision fields are copied verbatim: trigger, archetype, scope, merchant, customer, objective, action, CTA, send-as, evidence, selected offer, suppression key and expiry. The plan adds:
+  - `priority_score`: the winner's score
+  - `confidence`: see below
+  - `rationale_facts`: the evidence `formatted` strings, most important first, stable and de-duplicated
+
+  Candidates carry no `language_style` or `tone_profile`, so these stay unset. `plan_id` is the Phase 2A identity hash. Per-offer candidates of one trigger share a `plan_id`, because the identity excludes `selected_offer_id`; only one of them can be selected.
+- **Confidence** is decision certainty, computed after the winner is fixed and never used to rank:
+  `0.5·score/100 + 0.3·min(1, (score − runner_up)/20) + 0.2·evidence_strength`, with full separation when there is no runner-up, rounded half-even to 4 places. The result is in [0, 1].
+
+### Phase 2D non-goals (not implemented)
+
+- `/v1/tick` and `/v1/reply` integration, and multi-trigger tick assembly (Phase 2E)
+- suppression writes on send
+- reply decisions, message composition, templates, CTA wire rendering and LLM calls

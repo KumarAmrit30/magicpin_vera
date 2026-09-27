@@ -45,14 +45,21 @@ Implemented in `app/engine/eligibility.py` (not yet connected to the API):
 - checks: structure, trigger/scope integrity, evidence re-grounding against the current context, `expires_at`, active offer, merchant-state premises, closed conversation, the 3-unanswered-nudge limit, and suppression by `suppression_key` or merchant-wide key
 - suppression is read-only during evaluation (`SuppressionStore.peek`); nothing is written and no TTL is invented
 
+## Phase 2D — Scoring & Winner Selection
+
+Implemented in `app/engine/selection.py` (not yet connected to the API):
+
+- `select_decision(context, eligibility_results)` ranks only eligible candidates with the Phase 2A `score_candidate` / `rank_candidates` and returns exactly one `DecisionPlan`
+- a `NO_ACTION` plan when there are no candidates or none is eligible; `NO_ACTION` candidates otherwise compete on their features
+- deterministic confidence (score, margin over runner-up, evidence strength), computed after selection
+
 Not yet implemented:
 
-- winner selection
 - planner integration (`/v1/tick`, `/v1/reply`) and writing suppression on send
 - message composition
 
 Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A",
-"Candidate Generation — Phase 2B" and "Eligibility & Suppression — Phase 2C" sections of
+"Candidate Generation — Phase 2B", "Eligibility & Suppression — Phase 2C" and "Candidate Scoring & Winner Selection — Phase 2D" sections of
 [`docs/architecture.md`](docs/architecture.md), and [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md).
 
 ## Architecture
@@ -64,7 +71,7 @@ app/
 ├── clock.py           injectable UTC clock
 ├── api/               health.py (healthz, metadata), context.py, tick.py, reply.py, deps.py
 ├── models/            enums.py, schemas.py (API contract), domain.py (context payloads)
-├── engine/            decision domain: archetypes, actions, evidence, features, scoring, plans, eligibility (no FastAPI)
+├── engine/            decision domain: archetypes, actions, evidence, features, scoring, plans, eligibility, selection (no FastAPI)
 │   └── candidates/    context, registry, and one generator per trigger archetype
 └── state/             context_store.py, conversation_store.py, suppression_store.py, container.py
 tests/                 store, HTTP contract, domain-model, decision-domain and candidate-generation tests
