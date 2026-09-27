@@ -16,8 +16,8 @@ Implemented:
 - A suppression-key store with optional expiry
 
 In Phase 1A, `/v1/tick` returned `{"actions": []}`; since Phase 2E it runs the
-decision engine (below). `/v1/reply` still records the message and answers
-`wait` (or `end` for an already-closed conversation). No messages are composed.
+decision engine (below). Since Phase 2F `/v1/reply` reads the reply with fixed
+rules and answers `send`, `wait` or `end`. No messages are composed yet.
 
 ## Phase 2A — Decision Domain
 
@@ -63,14 +63,24 @@ Implemented in `app/engine/planner.py`; `/v1/tick` delegates to it:
 - suppression keys are committed only for emitted actions, after their conversations are created
 - `body`/`template_name`/`template_params` are deterministic placeholders built from the plan until Phase 3 composes messages
 
+## Phase 2F — `/v1/reply` Decision Engine
+
+Implemented in `app/engine/reply.py`; `/v1/reply` delegates to it:
+
+- rule-based reading of each reply: hostile, opt-out, auto-reply, not interested, deferral, off-topic, objection, affirmative, question, unclear
+- auto-replies: one prompt, then wait 24h, then end on the third in a row, counted per sender across their conversations (api-call-examples 4.1)
+- "let's do it" / "yes" moves the conversation to `committed` (action mode); questions and objections never send it back to qualifying
+- not interested and opt-out end the conversation; merchant hostility also writes `suppress:merchant:<id>` (no expiry; the package sets no duration), which later ticks respect
+- unknown conversation ids are created; a reply that conflicts with a conversation's merchant or customer is refused without being recorded
+- reply bodies are deterministic placeholders until Phase 3
+
 Not yet implemented:
 
-- `/v1/reply` decision engine (Phase 2F)
 - message composition (Phase 3)
 
 Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A",
 "Candidate Generation — Phase 2B", "Eligibility & Suppression — Phase 2C" and "Candidate Scoring & Winner Selection — Phase 2D" sections of
-[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md) and [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md).
+[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md), [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md) and [`docs/phase-2f-reply.md`](docs/phase-2f-reply.md).
 
 ## Architecture
 
@@ -132,7 +142,7 @@ pytest -q
 | GET    | `/v1/metadata` | Bot identity (team fields from env, `engine: "deterministic"`, `model: "none"`) |
 | POST   | `/v1/context`  | 200 created/replaced/duplicate, 409 stale version, 400 malformed |
 | POST   | `/v1/tick`     | Plans the available triggers; returns 0–20 actions (placeholder message text until Phase 3) |
-| POST   | `/v1/reply`    | Records the turn, returns `{"action": "wait", "wait_seconds": 1800, ...}` |
+| POST   | `/v1/reply`    | Records the turn and returns a `send` / `wait` / `end` decision (placeholder body until Phase 3) |
 
 Interactive schema: `http://localhost:8080/docs`. Example calls:
 

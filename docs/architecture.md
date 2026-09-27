@@ -5,7 +5,8 @@ the HTTP contract, typed models and in-memory state. Phase 2A adds the decision
 domain (`app/engine/`); Phase 2B adds trigger classification and grounded
 candidate generation (`app/engine/candidates/`). Phase 2C adds eligibility,
 Phase 2D winner selection, and Phase 2E wires them into `/v1/tick` through the
-tick planner. There is still no reply engine, no composer and no LLM.
+tick planner. Phase 2F adds the rule-based `/v1/reply` engine. There is still
+no composer and no LLM.
 
 Source of truth for the contract: `magicpin-ai-challenge/challenge-testing-brief.md` §2,
 `magicpin-ai-challenge/examples/api-call-examples.md`, and the seed dataset.
@@ -60,15 +61,18 @@ States: `new`, `qualifying`, `committed`, `waiting`, `completed`, `ended`
 carry `role`, `body`, `sent_at` (from the judge), `recorded_at` (server clock)
 and `turn_number`.
 
-Phase 1A reply handling:
+Reply handling (Phase 2F, `app/engine/reply.py`; replaces the Phase 1A
+placeholder):
 
 1. Unknown `conversation_id` → create it. `judge_simulator.py` replies on
    conversation ids it never received from `/v1/tick`.
-2. Backfill `merchant_id`/`customer_id` if the conversation lacked them; log a
-   warning on mismatch and keep the stored value.
-3. Append the message as a turn.
-4. Terminal state → respond `end`. `new` → `waiting`, respond `wait`.
-   Any other state is preserved, respond `wait`.
+2. A conflicting `merchant_id`/`customer_id` → respond `end`, record nothing.
+   Ids are backfilled only when the conversation's owner was unknown.
+3. Append the message as a turn, read it, and move the state. Hostile merchants
+   are also suppressed merchant-wide. Respond `send` / `wait` / `end`; a `send`
+   is recorded as a Vera turn. Terminal state → respond `end`.
+
+See [`phase-2f-reply.md`](phase-2f-reply.md).
 
 ## Suppression
 
@@ -77,7 +81,9 @@ Phase 1A reply handling:
 optional `now`, so the judge's simulated time can drive it in later phases.
 `peek(key, now)` is the non-mutating read used by candidate eligibility
 (Phase 2C); `get` drops expired records. The Phase 2E tick planner writes a
-plan's `suppression_key` (no expiry) only for actions it actually emits.
+plan's `suppression_key` (no expiry) only for actions it actually emits. The
+Phase 2F reply engine writes `suppress:merchant:<id>` (no expiry) when a
+merchant replies with hostility.
 
 ## HTTP contract as implemented
 
@@ -87,7 +93,7 @@ plan's `suppression_key` (no expiry) only for actions it actually emits.
 | `GET /v1/metadata`  | `{team_name, team_members, model, approach, contact_email, version, submitted_at, name, engine, description}` | — |
 | `POST /v1/context`  | 200 `{accepted: true, ack_id, stored_at, outcome}`                                        | 409 `{accepted: false, reason: "stale_version", current_version}`; 400 `{accepted: false, reason, details}` |
 | `POST /v1/tick`     | 200 `{actions: [...]}` (0–20 actions, Phase 2E planner)                                   | 422 (FastAPI validation) |
-| `POST /v1/reply`    | 200 `{action: "wait", wait_seconds: 1800, rationale}` or `{action: "end", rationale}`     | 422 (FastAPI validation) |
+| `POST /v1/reply`    | 200 `{action: "send", body, cta, rationale}`, `{action: "wait", wait_seconds, rationale}` or `{action: "end", rationale}` (Phase 2F) | 422 (FastAPI validation) |
 
 400 `reason` values: `invalid_scope`, `invalid_context_id`, `invalid_version`,
 `invalid_delivered_at`, `invalid_payload`, `invalid_request` (e.g. unparseable JSON).
@@ -551,3 +557,18 @@ available_triggers ─► load contexts ─► generate (2B) ─► evaluate (2C
 - Message fields are deterministic placeholders from the plan until Phase 3.
 
 Details, outcome codes, failure behaviour and non-goals: [`phase-2e-planner.md`](phase-2e-planner.md).
+
+## Reply Engine — Phase 2F
+
+`app/engine/reply.py`: `handle_reply(state, request) -> ReplyDecision`. `/v1/reply` only delegates to it and runs under `state.tick_lock`, so replies and ticks do not interleave.
+
+```text
+conversation lookup/create ─► ownership check ─► append turn ─► read reply (+ sender auto-reply streak)
+  ─► decide (send / wait / end + next state + optional merchant suppression) ─► apply ─► response
+```
+
+- Rule-based, with no candidate generation and no tick. Off-topic replies are redirected to the conversation's trigger.
+- Ended and completed conversations never resume. Merchant hostility writes `suppress:merchant:<id>` with no expiry, which Phase 2C's `merchant_suppressed` rule applies to later ticks.
+- Nudge counting stays in Phase 2C. The engine only records inbound turns and its own sends.
+
+Details and contract sources: [`phase-2f-reply.md`](phase-2f-reply.md).

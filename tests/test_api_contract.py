@@ -10,6 +10,7 @@ from app.models.enums import ContextScope, ConversationState, TurnRole
 from app.state.container import StateContainer
 from tests.conftest import (
     SAMPLE_PAYLOADS,
+    T0,
     FakeClock,
     context_body,
     customer_payload,
@@ -290,19 +291,23 @@ def test_tick_invalid_payload_is_422(client: TestClient, body: dict[str, Any]) -
 # POST /v1/reply
 # --------------------------------------------------------------------------- #
 
-WAIT_RESPONSE = {"action": "wait", "wait_seconds": 1800, "rationale": "Reply recorded; decision engine not yet enabled."}
+SEND_KEYS = {"action", "body", "cta", "rationale"}
 
 
 def test_reply_on_unknown_conversation_creates_it(client: TestClient, state: StateContainer) -> None:
     response = client.post("/v1/reply", json=reply_body("conv_001"))
 
     assert response.status_code == 200
-    assert response.json() == WAIT_RESPONSE
+    assert set(response.json()) == SEND_KEYS
+    assert response.json()["cta"] == "binary_confirm_cancel"
     conversation = state.conversation_store.get("conv_001")
     assert conversation.merchant_id == MERCHANT_ID
-    assert conversation.state is ConversationState.WAITING
-    [turn] = conversation.turns
-    assert (turn.role, turn.body, turn.turn_number) == (TurnRole.MERCHANT, "Yes please send the abstract.", 2)
+    assert conversation.state is ConversationState.COMMITTED
+    merchant_turn, vera_turn = conversation.turns
+    assert (merchant_turn.role, merchant_turn.body, merchant_turn.turn_number) == (
+        TurnRole.MERCHANT, "Yes please send the abstract.", 2
+    )
+    assert (vera_turn.role, vera_turn.body) == (TurnRole.VERA, response.json()["body"])
 
 
 def test_reply_appends_turns_in_order_and_preserves_state(client: TestClient, state: StateContainer, clock: FakeClock) -> None:
@@ -312,21 +317,22 @@ def test_reply_appends_turns_in_order_and_preserves_state(client: TestClient, st
 
     response = client.post("/v1/reply", json=reply_body("conv_001", message="second", turn_number=3))
 
-    assert response.json() == WAIT_RESPONSE
+    assert response.json()["action"] == "send"
     conversation = state.conversation_store.get("conv_001")
-    assert [t.body for t in conversation.turns] == ["first", "second"]
-    assert conversation.state is ConversationState.WAITING
+    assert [(t.role, t.body) for t in conversation.turns[::2]] == [(TurnRole.MERCHANT, "first"), (TurnRole.MERCHANT, "second")]
+    assert [t.role for t in conversation.turns[1::2]] == [TurnRole.VERA, TurnRole.VERA]
+    assert conversation.state is ConversationState.QUALIFYING
     assert conversation.created_at == created_at
     assert conversation.updated_at == clock.now
 
 
-def test_reply_preserves_non_new_state(client: TestClient, state: StateContainer) -> None:
-    state.conversation_store.create("conv_q", merchant_id=MERCHANT_ID, state=ConversationState.QUALIFYING)
+def test_reply_does_not_regress_committed_state(client: TestClient, state: StateContainer) -> None:
+    state.conversation_store.create("conv_c", merchant_id=MERCHANT_ID, state=ConversationState.COMMITTED)
 
-    response = client.post("/v1/reply", json=reply_body("conv_q"))
+    response = client.post("/v1/reply", json=reply_body("conv_c", message="How long does it take?"))
 
-    assert response.json() == WAIT_RESPONSE
-    assert state.conversation_store.get("conv_q").state is ConversationState.QUALIFYING
+    assert response.json()["action"] == "send"
+    assert state.conversation_store.get("conv_c").state is ConversationState.COMMITTED
 
 
 @pytest.mark.parametrize("terminal", [ConversationState.ENDED, ConversationState.COMPLETED])
@@ -363,6 +369,24 @@ def test_reply_from_customer(client: TestClient, state: StateContainer) -> None:
     conversation = state.conversation_store.get("conv_priya")
     assert conversation.customer_id == "c_001_priya_for_m001"
     assert conversation.turns[0].role is TurnRole.CUSTOMER
+
+
+def test_reply_for_another_merchants_conversation_is_refused(client: TestClient, state: StateContainer) -> None:
+    state.conversation_store.create("conv_m1", merchant_id=MERCHANT_ID)
+
+    response = client.post("/v1/reply", json=reply_body("conv_m1", merchant_id="m_002_other"))
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"action", "rationale"} and response.json()["action"] == "end"
+    assert state.conversation_store.get("conv_m1").turns == []
+
+
+def test_hostile_reply_ends_and_suppresses_merchant(client: TestClient, state: StateContainer) -> None:
+    response = client.post("/v1/reply", json=reply_body("conv_h", message="Stop messaging me. This is useless spam."))
+
+    assert response.json()["action"] == "end"
+    assert state.suppression_store.is_suppressed(f"suppress:merchant:{MERCHANT_ID}", T0)
+    assert state.conversation_store.get("conv_h").state is ConversationState.ENDED
 
 
 @pytest.mark.parametrize(

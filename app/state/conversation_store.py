@@ -95,6 +95,14 @@ class ConversationStore:
             conversation = self._conversations.get(conversation_id)
             return None if conversation is None else conversation.model_copy(deep=True)
 
+    def find(self, *, merchant_id: str, customer_id: str | None) -> list[Conversation]:
+        """Snapshots of every conversation with exactly this merchant/customer pair, by conversation id."""
+        with self._lock:
+            matches = [
+                c for c in self._conversations.values() if c.merchant_id == merchant_id and c.customer_id == customer_id
+            ]
+            return [c.model_copy(deep=True) for c in sorted(matches, key=lambda c: c.conversation_id)]
+
     def exists(self, conversation_id: str) -> bool:
         """True if the conversation is known."""
         with self._lock:
