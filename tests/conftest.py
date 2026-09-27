@@ -7,6 +7,8 @@ seed dataset is loaded from the vendored challenge package when present.
 import copy
 import functools
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -225,6 +227,43 @@ def seed_context(trigger_id: str, **overrides: Any) -> CandidateGenerationContex
     """A candidate-generation context for a seed trigger at :data:`SEED_NOW`."""
     fields = {**seed_context_parts(trigger_id), "now": SEED_NOW, **overrides}
     return CandidateGenerationContext(**fields)
+
+
+@pytest.fixture(scope="session")
+def expanded(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The official expanded dataset, generated into a pytest temp dir (never into the repository)."""
+    out = tmp_path_factory.mktemp("vera_expanded") / "expanded"
+    subprocess.run(
+        [sys.executable, str(DATASET_DIR / "generate_dataset.py"), "--seed-dir", str(DATASET_DIR), "--out", str(out)],
+        cwd=out.parent,
+        check=True,
+        capture_output=True,
+    )
+
+    def load(sub: str, key: str) -> dict[str, dict]:
+        return {data[key]: data for data in (json.loads(p.read_text()) for p in sorted((out / sub).glob("*.json")))}
+
+    return {
+        "categories": load("categories", "slug"),
+        "merchants": load("merchants", "merchant_id"),
+        "customers": load("customers", "customer_id"),
+        "triggers": load("triggers", "id"),
+        "pairs": json.loads((out / "test_pairs.json").read_text())["pairs"],
+    }
+
+
+def expanded_context(data: dict[str, Any], trigger_id: str) -> CandidateGenerationContext:
+    """A candidate-generation context for an expanded-dataset trigger at :data:`SEED_NOW`."""
+    trigger = data["triggers"][trigger_id]
+    merchant = data["merchants"][trigger["merchant_id"]]
+    customer_id = trigger.get("customer_id")
+    return CandidateGenerationContext(
+        category=data["categories"][merchant["category_slug"]],
+        merchant=merchant,
+        trigger=trigger,
+        customer=data["customers"][customer_id] if customer_id else None,
+        now=SEED_NOW,
+    )
 
 
 def plan_fields(**overrides: Any) -> dict[str, Any]:

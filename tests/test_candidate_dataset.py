@@ -1,21 +1,17 @@
 """Candidate generation against the canonical case studies and the full expanded dataset (Phase 2B).
 
 The expanded dataset is produced by the official ``generate_dataset.py`` into a
-pytest temporary directory, so nothing is written into the repository.
+pytest temporary directory (the ``expanded`` fixture), so nothing is written
+into the repository.
 """
 
-import json
-import subprocess
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from app.engine import ActionType, CTAType, DecisionScope, SendAs, TRIGGER_KIND_ARCHETYPES, classify_trigger
-from app.engine.candidates import CandidateGenerationContext, generate_candidates
-from tests.conftest import DATASET_DIR, SEED_NOW, requires_dataset, seed_context
+from app.engine.candidates import generate_candidates
+from tests.conftest import DATASET_DIR, expanded_context, requires_dataset, seed_context
 
 pytestmark = requires_dataset
 
@@ -116,39 +112,7 @@ def test_case_10_chronic_refill() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture(scope="module")
-def expanded(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    out = tmp_path_factory.mktemp("vera_expanded") / "expanded"
-    subprocess.run(
-        [sys.executable, str(DATASET_DIR / "generate_dataset.py"), "--seed-dir", str(DATASET_DIR), "--out", str(out)],
-        cwd=out.parent,
-        check=True,
-        capture_output=True,
-    )
-
-    def load(sub: str, key: str) -> dict[str, dict]:
-        return {data[key]: data for data in (json.loads(p.read_text()) for p in sorted((out / sub).glob("*.json")))}
-
-    return {
-        "categories": load("categories", "slug"),
-        "merchants": load("merchants", "merchant_id"),
-        "customers": load("customers", "customer_id"),
-        "triggers": load("triggers", "id"),
-        "pairs": json.loads((out / "test_pairs.json").read_text())["pairs"],
-    }
-
-
-def _context(data: dict[str, Any], trigger_id: str) -> CandidateGenerationContext:
-    trigger = data["triggers"][trigger_id]
-    merchant = data["merchants"][trigger["merchant_id"]]
-    customer_id = trigger.get("customer_id")
-    return CandidateGenerationContext(
-        category=data["categories"][merchant["category_slug"]],
-        merchant=merchant,
-        trigger=trigger,
-        customer=data["customers"][customer_id] if customer_id else None,
-        now=SEED_NOW,
-    )
+_context = expanded_context
 
 
 def test_expanded_dataset_is_generated_outside_the_repo(expanded: dict[str, Any]) -> None:

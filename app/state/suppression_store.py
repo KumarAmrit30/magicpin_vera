@@ -72,6 +72,16 @@ class SuppressionStore:
                 return None
             return record
 
+    def peek(self, key: str, now: datetime) -> SuppressionRecord | None:
+        """Return the record for ``key`` if it is active at ``now``, without modifying the store.
+
+        Unlike :meth:`get`, expired records are left in place, so read-only
+        callers (candidate eligibility) never mutate suppression state.
+        """
+        with self._lock:
+            record = self._records.get(key)
+        return record if record is not None and record.is_active(now) else None
+
     def clear(self, key: str) -> bool:
         """Remove ``key``. Returns True if it was present."""
         with self._lock:

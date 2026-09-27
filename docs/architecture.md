@@ -75,7 +75,8 @@ Phase 1A reply handling:
 `suppress(key, reason=None, expires_at=None)`, `is_suppressed(key, now=None)`,
 `get`, `clear(key)`, `clear_all()`. Expiry is lazy and evaluated against an
 optional `now`, so the judge's simulated time can drive it in later phases.
-Nothing writes suppression keys yet.
+`peek(key, now)` is the non-mutating read used by candidate eligibility
+(Phase 2C); `get` drops expired records. Nothing writes suppression keys yet.
 
 ## HTTP contract as implemented
 
@@ -452,3 +453,21 @@ substring search.
 - offer selection across multiple offers (each active offer is its own candidate)
 - `/v1/tick` and `/v1/reply` integration (both still behave exactly as in Phase 1A)
 - planning, confidence, message composition, templates and LLM calls
+
+## Eligibility & Suppression — Phase 2C
+
+`app/engine/eligibility.py` sits between generation and ranking:
+`evaluate_eligibility(candidate, context, suppression, *, now) -> EligibilityResult(candidate, eligible, reasons)`.
+It re-validates Phase 2A invariants and checks trigger, merchant, customer and
+conversation integrity. It re-grounds every evidence item against the current
+context and checks trigger expiry (`expires_at`), the selected offer, Phase 2B
+merchant premises, closed conversations, the §12.5 unanswered-nudge limit, the
+candidate's `suppression_key`, and the merchant-wide suppression key.
+
+Each failed rule adds one structured `EligibilityReason(code, detail, source)`.
+`NO_ACTION` is exempt from the send-only rules.
+
+Eligibility never ranks, selects or de-duplicates. It only reads suppression
+(`SuppressionReader.peek`), and writing keys after a send belongs to the commit
+phase. Rules, sources and documented uncertainties are in
+[`phase-2c-eligibility.md`](phase-2c-eligibility.md).
