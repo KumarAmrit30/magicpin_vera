@@ -77,7 +77,7 @@ class TickRequest(BaseModel):
 
 
 class TickAction(BaseModel):
-    """One proactive send. Defined for the contract; Phase 1A never emits actions."""
+    """One proactive send, opening a new conversation."""
 
     conversation_id: NonEmptyStr
     merchant_id: NonEmptyStr

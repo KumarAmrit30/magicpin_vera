@@ -1,5 +1,6 @@
 """Owner of all per-process application state."""
 
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -19,6 +20,8 @@ class StateContainer:
     suppression_store: SuppressionStore
     monotonic: Callable[[], float] = time.monotonic
     started_at: float = field(init=False)
+    tick_lock: threading.Lock = field(init=False, repr=False, compare=False, default_factory=threading.Lock)
+    """Serializes tick planning so read -> decide -> commit is not interleaved with another tick."""
 
     def __post_init__(self) -> None:
         self.started_at = self.monotonic()

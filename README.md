@@ -15,9 +15,9 @@ Implemented:
 - A conversation store (states `new`/`qualifying`/`committed`/`waiting`/`completed`/`ended`, ordered turns)
 - A suppression-key store with optional expiry
 
-**Decision intelligence is not implemented yet.** `/v1/tick` always returns
-`{"actions": []}`, and `/v1/reply` records the message and answers `wait`
-(or `end` for an already-closed conversation). No messages are composed.
+In Phase 1A, `/v1/tick` returned `{"actions": []}`; since Phase 2E it runs the
+decision engine (below). `/v1/reply` still records the message and answers
+`wait` (or `end` for an already-closed conversation). No messages are composed.
 
 ## Phase 2A — Decision Domain
 
@@ -53,14 +53,24 @@ Implemented in `app/engine/selection.py` (not yet connected to the API):
 - a `NO_ACTION` plan when there are no candidates or none is eligible; `NO_ACTION` candidates otherwise compete on their features
 - deterministic confidence (score, margin over runner-up, evidence strength), computed after selection
 
+## Phase 2E — `/v1/tick` Planner
+
+Implemented in `app/engine/planner.py`; `/v1/tick` delegates to it:
+
+- `plan_tick(state, now=..., available_triggers=...)` runs each available trigger through Phases 2B–2D and turns the resulting plans into at most 20 actions
+- `NO_ACTION` is never emitted; at most one action per `(merchant_id, conversation_id)` pair (testing brief FAQ; guaranteed by unique ids) and per suppression key per tick, best-ranked first by the Phase 2A sort key
+- each emitted action opens a new conversation with a fresh deterministic id; existing conversations are never reused by a tick (testing brief §2.2)
+- suppression keys are committed only for emitted actions, after their conversations are created
+- `body`/`template_name`/`template_params` are deterministic placeholders built from the plan until Phase 3 composes messages
+
 Not yet implemented:
 
-- planner integration (`/v1/tick`, `/v1/reply`) and writing suppression on send
-- message composition
+- `/v1/reply` decision engine (Phase 2F)
+- message composition (Phase 3)
 
 Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A",
 "Candidate Generation — Phase 2B", "Eligibility & Suppression — Phase 2C" and "Candidate Scoring & Winner Selection — Phase 2D" sections of
-[`docs/architecture.md`](docs/architecture.md), and [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md).
+[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md) and [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md).
 
 ## Architecture
 
@@ -71,7 +81,7 @@ app/
 ├── clock.py           injectable UTC clock
 ├── api/               health.py (healthz, metadata), context.py, tick.py, reply.py, deps.py
 ├── models/            enums.py, schemas.py (API contract), domain.py (context payloads)
-├── engine/            decision domain: archetypes, actions, evidence, features, scoring, plans, eligibility, selection (no FastAPI)
+├── engine/            decision domain: archetypes, actions, evidence, features, scoring, plans, eligibility, selection, planner (no FastAPI)
 │   └── candidates/    context, registry, and one generator per trigger archetype
 └── state/             context_store.py, conversation_store.py, suppression_store.py, container.py
 tests/                 store, HTTP contract, domain-model, decision-domain and candidate-generation tests
@@ -116,12 +126,12 @@ pytest -q
 
 ## Endpoints
 
-| Method | Path           | Phase 1A behavior |
-|--------|----------------|-------------------|
+| Method | Path           | Current behavior |
+|--------|----------------|------------------|
 | GET    | `/v1/healthz`  | `{"status": "ok", "uptime_seconds": N, "contexts_loaded": {...}}` |
 | GET    | `/v1/metadata` | Bot identity (team fields from env, `engine: "deterministic"`, `model: "none"`) |
 | POST   | `/v1/context`  | 200 created/replaced/duplicate, 409 stale version, 400 malformed |
-| POST   | `/v1/tick`     | Validates input, returns `{"actions": []}` |
+| POST   | `/v1/tick`     | Plans the available triggers; returns 0–20 actions (placeholder message text until Phase 3) |
 | POST   | `/v1/reply`    | Records the turn, returns `{"action": "wait", "wait_seconds": 1800, ...}` |
 
 Interactive schema: `http://localhost:8080/docs`. Example calls:

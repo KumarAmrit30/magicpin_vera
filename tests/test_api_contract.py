@@ -232,6 +232,47 @@ def test_tick_does_not_mutate_state(client: TestClient, state: StateContainer) -
     assert (state.context_store.counts(), len(state.conversation_store), len(state.suppression_store)) == before
 
 
+TICK_ACTION_KEYS = {
+    "conversation_id", "merchant_id", "customer_id", "send_as", "trigger_id", "template_name",
+    "template_params", "body", "cta", "suppression_key", "rationale",
+}
+
+
+def push_seed(client: TestClient) -> None:
+    for scope, items in load_seed_dataset().items():
+        for context_id, payload in items:
+            assert client.post("/v1/context", json=context_body(scope, context_id, 1, payload)).status_code == 200
+
+
+@requires_dataset
+def test_tick_emits_contract_shaped_actions(client: TestClient, state: StateContainer) -> None:
+    push_seed(client)
+
+    response = client.post(
+        "/v1/tick",
+        json={"now": "2026-04-26T04:30:00Z", "available_triggers": ["trg_001_research_digest_dentists", "trg_003_recall_due_priya"]},
+    )
+
+    assert response.status_code == 200
+    actions = response.json()["actions"]
+    assert len(actions) == 2
+    assert all(set(action) == TICK_ACTION_KEYS for action in actions)
+    assert {(a["trigger_id"], a["send_as"], a["customer_id"]) for a in actions} == {
+        ("trg_001_research_digest_dentists", "vera", None),
+        ("trg_003_recall_due_priya", "merchant_on_behalf", "c_001_priya_for_m001"),
+    }
+    assert all(state.conversation_store.exists(a["conversation_id"]) for a in actions)
+
+
+@requires_dataset
+def test_repeated_tick_does_not_resend(client: TestClient) -> None:
+    push_seed(client)
+    body = {"now": "2026-04-26T04:30:00Z", "available_triggers": ["trg_001_research_digest_dentists"]}
+
+    assert len(client.post("/v1/tick", json=body).json()["actions"]) == 1
+    assert client.post("/v1/tick", json=body).json() == {"actions": []}
+
+
 @pytest.mark.parametrize(
     "body",
     [

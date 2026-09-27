@@ -3,9 +3,9 @@
 Phase 1A is the foundation for a deterministic message engine. It implements
 the HTTP contract, typed models and in-memory state. Phase 2A adds the decision
 domain (`app/engine/`); Phase 2B adds trigger classification and grounded
-candidate generation (`app/engine/candidates/`). None of it is wired into the
-API yet. The service still does **not** decide what to send: there is no
-eligibility, no winner selection, no composer and no LLM.
+candidate generation (`app/engine/candidates/`). Phase 2C adds eligibility,
+Phase 2D winner selection, and Phase 2E wires them into `/v1/tick` through the
+tick planner. There is still no reply engine, no composer and no LLM.
 
 Source of truth for the contract: `magicpin-ai-challenge/challenge-testing-brief.md` §2,
 `magicpin-ai-challenge/examples/api-call-examples.md`, and the seed dataset.
@@ -76,7 +76,8 @@ Phase 1A reply handling:
 `get`, `clear(key)`, `clear_all()`. Expiry is lazy and evaluated against an
 optional `now`, so the judge's simulated time can drive it in later phases.
 `peek(key, now)` is the non-mutating read used by candidate eligibility
-(Phase 2C); `get` drops expired records. Nothing writes suppression keys yet.
+(Phase 2C); `get` drops expired records. The Phase 2E tick planner writes a
+plan's `suppression_key` (no expiry) only for actions it actually emits.
 
 ## HTTP contract as implemented
 
@@ -85,7 +86,7 @@ optional `now`, so the judge's simulated time can drive it in later phases.
 | `GET /v1/healthz`   | `{status, uptime_seconds, contexts_loaded{category,merchant,customer,trigger}}`           | —      |
 | `GET /v1/metadata`  | `{team_name, team_members, model, approach, contact_email, version, submitted_at, name, engine, description}` | — |
 | `POST /v1/context`  | 200 `{accepted: true, ack_id, stored_at, outcome}`                                        | 409 `{accepted: false, reason: "stale_version", current_version}`; 400 `{accepted: false, reason, details}` |
-| `POST /v1/tick`     | 200 `{actions: []}`                                                                       | 422 (FastAPI validation) |
+| `POST /v1/tick`     | 200 `{actions: [...]}` (0–20 actions, Phase 2E planner)                                   | 422 (FastAPI validation) |
 | `POST /v1/reply`    | 200 `{action: "wait", wait_seconds: 1800, rationale}` or `{action: "end", rationale}`     | 422 (FastAPI validation) |
 
 400 `reason` values: `invalid_scope`, `invalid_context_id`, `invalid_version`,
@@ -533,3 +534,20 @@ EligibilityResult[]  ──filter eligible──►  score_candidate()  ──�
 - `/v1/tick` and `/v1/reply` integration, and multi-trigger tick assembly (Phase 2E)
 - suppression writes on send
 - reply decisions, message composition, templates, CTA wire rendering and LLM calls
+
+## Tick Planner — Phase 2E
+
+`app/engine/planner.py`: `plan_tick(state, *, now, available_triggers) -> TickResult`. `/v1/tick` only delegates to it.
+
+```text
+available_triggers ─► load contexts ─► generate (2B) ─► evaluate (2C) ─► select (2D) ─► drop NO_ACTION
+  ─► order by candidate_sort_key ─► one per suppression key ─► first 20
+  ─► TickActions ─► create conversations ─► commit suppression ─► response
+```
+
+- Orchestration only: each trigger's plan is exactly the Phase 2D plan. Across triggers, the Phase 2A sort key of each plan's winning candidate orders the plans.
+- Every action opens a new conversation with a fresh deterministic id (testing brief §2.2); a tick never reuses a conversation and passes none to Phase 2C.
+- Suppression is committed only for emitted actions, after their conversations are created. `NO_ACTION`, ineligible, de-duplicated and over-cap plans write nothing.
+- Message fields are deterministic placeholders from the plan until Phase 3.
+
+Details, outcome codes, failure behaviour and non-goals: [`phase-2e-planner.md`](phase-2e-planner.md).
