@@ -554,7 +554,7 @@ available_triggers ─► load contexts ─► generate (2B) ─► evaluate (2C
 - Orchestration only: each trigger's plan is exactly the Phase 2D plan. Across triggers, the Phase 2A sort key of each plan's winning candidate orders the plans.
 - Every action opens a new conversation with a fresh deterministic id (testing brief §2.2); a tick never reuses a conversation and passes none to Phase 2C.
 - Suppression is committed only for emitted actions, after their conversations are created. `NO_ACTION`, ineligible, de-duplicated and over-cap plans write nothing.
-- Message fields are deterministic placeholders from the plan until Phase 3.
+- Message fields (`body`, `template_name`, `template_params`) come from the Phase 3 composer; every other field is copied from the plan.
 
 Details, outcome codes, failure behaviour and non-goals: [`phase-2e-planner.md`](phase-2e-planner.md).
 
@@ -572,3 +572,20 @@ conversation lookup/create ─► ownership check ─► append turn ─► read
 - Nudge counting stays in Phase 2C. The engine only records inbound turns and its own sends.
 
 Details and contract sources: [`phase-2f-reply.md`](phase-2f-reply.md).
+
+## Message Composer — Phase 3
+
+`app/engine/composer.py`: `compose(plan, context) -> ComposedMessage`. The planner calls it in `tick_action` for each emitted plan; nothing upstream of the selected plan changes.
+
+```text
+DecisionPlan + CandidateGenerationContext
+  ─► grounded facts (plan evidence, re-checked with is_grounded; internal labels dropped)
+  ─► salutation / lead facts / digest citation / proposal / one CTA
+  ─► ComposedMessage(body, cta, send_as, template_name, template_params, template, facts_used)
+```
+
+- Realization only: no selection, ranking, suppression or conversation-state change. `NO_ACTION` raises `CompositionError`.
+- `template` is the body with `{{n}}` in place of each positional parameter; substituting `template_params` gives the body back.
+- Reply bodies stay Phase 2F placeholders (Phase 3B).
+
+Details: [`phase-3-composer.md`](phase-3-composer.md).

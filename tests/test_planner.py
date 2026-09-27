@@ -16,14 +16,15 @@ import pytest
 
 from app.engine.actions import ActionType, DecisionScope, SendAs
 from app.engine.candidates import generate_candidates
+from app.engine.composer import compose
 from app.engine.eligibility import EligibilityReasonCode, evaluate_candidates
 from app.engine.planner import (
     CONVERSATION_ID_PREFIX,
     MAX_ACTIONS_PER_TICK,
-    PLACEHOLDER_BODY_PREFIX,
     WIRE_CTA,
     TickResult,
     TriggerOutcome,
+    load_context,
     new_conversation_id,
     plan_tick,
     tick_action,
@@ -156,9 +157,10 @@ def test_single_actionable_trigger_emits_exactly_one_action_from_its_plan() -> N
         DIGEST, plan.merchant_id, None, SendAs.VERA, plan.suppression_key,
     )
     assert action.cta is WIRE_CTA[plan.cta_type]
-    assert action.template_name == f"vera_{plan.action.value}_v0"
-    assert action.template_params == list(plan.rationale_facts)
-    assert action.body.startswith(f"{PLACEHOLDER_BODY_PREFIX} {plan.objective}")
+    message = compose(plan, load_context(state.context_store, DIGEST, SEED_NOW))
+    assert action.template_name == message.template_name == f"vera_{plan.action.value}_v1"
+    assert action.template_params == list(message.template_params)
+    assert action.body == message.body
     assert plan.plan_id in action.rationale
     assert decision(result, DIGEST).outcome is O.EMITTED
 
@@ -497,7 +499,7 @@ def test_no_action_plan_cannot_become_an_action() -> None:
     plan = decision(tick(state, IPL), IPL).plan
 
     with pytest.raises(ValueError, match="no_action"):
-        tick_action(plan, "conv_x")
+        tick_action(plan, "conv_x", load_context(state.context_store, IPL, SEED_NOW))
 
 
 # --------------------------------------------------------------------------- #

@@ -186,6 +186,8 @@ both read a key as unsuppressed and emit the same plan.
   - `template_name = vera_<action>_v0`
   - `template_params = rationale_facts`
   - `body = "[uncomposed] <objective> | <facts…>"`
+
+  Phase 3 has since replaced these three fields with the composer's output (`vera_<action>_v1`; see [`phase-3-composer.md`](phase-3-composer.md)). The rest of this document is unchanged.
 - The planning-to-wire CTA mapping is one-to-one: `yes_no → binary_yes_no`, `open_ended → open_ended`, `confirmation → binary_confirm_cancel`, `none → none`. Phase 3 may refine it, e.g. `multi_choice_slot`.
 - No LLM, no embeddings, no randomness.
 - No `/v1/reply` decision engine (Phase 2F): no reply classification, intent transitions, auto-reply or hostility handling, conversation state machine, or opt-out suppression writes.

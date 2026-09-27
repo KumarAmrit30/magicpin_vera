@@ -61,7 +61,7 @@ Implemented in `app/engine/planner.py`; `/v1/tick` delegates to it:
 - `NO_ACTION` is never emitted; at most one action per `(merchant_id, conversation_id)` pair (testing brief FAQ; guaranteed by unique ids) and per suppression key per tick, best-ranked first by the Phase 2A sort key
 - each emitted action opens a new conversation with a fresh deterministic id; existing conversations are never reused by a tick (testing brief §2.2)
 - suppression keys are committed only for emitted actions, after their conversations are created
-- `body`/`template_name`/`template_params` are deterministic placeholders built from the plan until Phase 3 composes messages
+- `body`/`template_name`/`template_params` come from the Phase 3 composer
 
 ## Phase 2F — `/v1/reply` Decision Engine
 
@@ -72,15 +72,25 @@ Implemented in `app/engine/reply.py`; `/v1/reply` delegates to it:
 - "let's do it" / "yes" moves the conversation to `committed` (action mode); questions and objections never send it back to qualifying
 - not interested and opt-out end the conversation; merchant hostility also writes `suppress:merchant:<id>` (no expiry; the package sets no duration), which later ticks respect
 - unknown conversation ids are created; a reply that conflicts with a conversation's merchant or customer is refused without being recorded
-- reply bodies are deterministic placeholders until Phase 3
+- reply bodies are still deterministic `[uncomposed reply]` placeholders (reply composition is deferred to Phase 3B)
+
+## Phase 3 — Message Composer
+
+Implemented in `app/engine/composer.py`; the tick planner calls it for every emitted plan:
+
+- `compose(plan, context) -> ComposedMessage` turns an already-selected `DecisionPlan` into `body`, wire `cta`, `send_as`, `template_name` (`vera_<action>_v1`) and positional `template_params`; it never selects, re-ranks or changes a decision
+- every value in a body comes from the plan's evidence (re-checked against the context) or from context identity (owner name, business name, customer name, category salutation, digest source); missing facts are omitted, never invented
+- one CTA, as the last sentence: a single question for `binary_yes_no`/`open_ended`, `Reply CONFIRM …` for `binary_confirm_cancel`, nothing for `none`
+- `vera` messages address the owner with the category salutation (`Dr. Meera`, `Hi Suresh`); `merchant_on_behalf` messages speak as the business to the customer and use only customer-facing facts
+- `NO_ACTION` raises `CompositionError`; deterministic (no clock, randomness, LLM or I/O)
 
 Not yet implemented:
 
-- message composition (Phase 3)
+- composed `/v1/reply` bodies, Hindi-English code-mix wording (Phase 3B)
 
 Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A",
 "Candidate Generation — Phase 2B", "Eligibility & Suppression — Phase 2C" and "Candidate Scoring & Winner Selection — Phase 2D" sections of
-[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md), [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md) and [`docs/phase-2f-reply.md`](docs/phase-2f-reply.md).
+[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md), [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md), [`docs/phase-2f-reply.md`](docs/phase-2f-reply.md) and [`docs/phase-3-composer.md`](docs/phase-3-composer.md).
 
 ## Architecture
 
@@ -141,8 +151,8 @@ pytest -q
 | GET    | `/v1/healthz`  | `{"status": "ok", "uptime_seconds": N, "contexts_loaded": {...}}` |
 | GET    | `/v1/metadata` | Bot identity (team fields from env, `engine: "deterministic"`, `model: "none"`) |
 | POST   | `/v1/context`  | 200 created/replaced/duplicate, 409 stale version, 400 malformed |
-| POST   | `/v1/tick`     | Plans the available triggers; returns 0–20 actions (placeholder message text until Phase 3) |
-| POST   | `/v1/reply`    | Records the turn and returns a `send` / `wait` / `end` decision (placeholder body until Phase 3) |
+| POST   | `/v1/tick`     | Plans the available triggers; returns 0–20 actions with composed messages |
+| POST   | `/v1/reply`    | Records the turn and returns a `send` / `wait` / `end` decision (placeholder body until Phase 3B) |
 
 Interactive schema: `http://localhost:8080/docs`. Example calls:
 

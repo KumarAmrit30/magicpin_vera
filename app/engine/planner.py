@@ -8,7 +8,7 @@
         -> drop NO_ACTION
         -> order by candidate_sort_key of each plan's winning candidate (Phase 2A)
         -> one per suppression key, first MAX_ACTIONS_PER_TICK
-        -> TickAction (structured placeholder until Phase 3 composes the message)
+        -> TickAction (plan fields verbatim; body/template from compose, Phase 3)
         -> create conversations -> commit suppression -> response
 
 The planner orchestrates only: it never scores, generates, judges eligibility
@@ -32,13 +32,13 @@ from enum import StrEnum
 
 from pydantic import ValidationError
 
-from app.engine.actions import CTAType
 from app.engine.candidates import CandidateGenerationContext, generate_candidates
+from app.engine.composer import WIRE_CTA, compose
 from app.engine.eligibility import EligibilityReasonCode, EligibilityResult, evaluate_candidates
 from app.engine.plans import DecisionCandidate, DecisionPlan
 from app.engine.scoring import candidate_sort_key
 from app.engine.selection import UnplannableTriggerError, rank_eligible, select_decision
-from app.models.enums import ContextScope, CtaType, TurnRole
+from app.models.enums import ContextScope, TurnRole
 from app.models.schemas import TickAction
 from app.state.container import StateContainer
 from app.state.context_store import ContextStore
@@ -50,18 +50,6 @@ MAX_ACTIONS_PER_TICK = 20
 
 CONVERSATION_ID_PREFIX = "conv_"
 CONVERSATION_ID_HEX_CHARS = 20
-
-PLACEHOLDER_TEMPLATE_VERSION = "v0"
-PLACEHOLDER_BODY_PREFIX = "[uncomposed]"
-"""Marks a body assembled from plan fields; Phase 3 replaces it with a composed message."""
-
-WIRE_CTA: dict[CTAType, CtaType] = {
-    CTAType.NONE: CtaType.NONE,
-    CTAType.YES_NO: CtaType.BINARY_YES_NO,
-    CTAType.OPEN_ENDED: CtaType.OPEN_ENDED,
-    CTAType.CONFIRMATION: CtaType.BINARY_CONFIRM_CANCEL,
-}
-"""One-to-one planning -> wire CTA mapping; Phase 3 may refine it (e.g. ``multi_choice_slot``)."""
 
 
 class TriggerOutcome(StrEnum):
@@ -105,6 +93,7 @@ class TickResult:
 class _Planned:
     decision: TriggerDecision
     winner: DecisionCandidate | None
+    context: CandidateGenerationContext | None = None
 
 
 def plan_tick(state: StateContainer, *, now: datetime, available_triggers: Iterable[str]) -> TickResult:
@@ -183,21 +172,21 @@ def new_conversation_id(plan: DecisionPlan, now: datetime, is_taken: Callable[[s
     return candidate
 
 
-def tick_action(plan: DecisionPlan, conversation_id: str) -> TickAction:
-    """The wire action for an emitted plan: plan fields verbatim, placeholder text until Phase 3."""
+def tick_action(plan: DecisionPlan, conversation_id: str, context: CandidateGenerationContext) -> TickAction:
+    """The wire action for an emitted plan: plan fields verbatim, message text from the Phase 3 composer."""
     if plan.is_no_action:
         raise ValueError(f"no_action plan {plan.plan_id} cannot be emitted")
-    facts = list(plan.rationale_facts)
+    message = compose(plan, context)
     return TickAction(
         conversation_id=conversation_id,
         merchant_id=plan.merchant_id,
         customer_id=plan.customer_id,
-        send_as=plan.send_as,
+        send_as=message.send_as,
         trigger_id=plan.trigger_id,
-        template_name=f"vera_{plan.action.value}_{PLACEHOLDER_TEMPLATE_VERSION}",
-        template_params=facts,
-        body=" | ".join([f"{PLACEHOLDER_BODY_PREFIX} {plan.objective}", *facts]),
-        cta=WIRE_CTA[plan.cta_type],
+        template_name=message.template_name,
+        template_params=list(message.template_params),
+        body=message.body,
+        cta=message.cta,
         suppression_key=plan.suppression_key,
         rationale=(
             f"{plan.action.value} ({plan.scope.value}) for {plan.trigger_id}: {plan.objective}. "
@@ -219,7 +208,7 @@ def _plan_trigger(state: StateContainer, trigger_id: str, now: datetime) -> _Pla
     if plan.is_no_action:
         return _Planned(TriggerDecision(trigger_id, TriggerOutcome.NO_ACTION, **counts, plan=plan), None)
     winner = rank_eligible(results)[0].candidate
-    return _Planned(TriggerDecision(trigger_id, TriggerOutcome.EMITTED, **counts, plan=plan), winner)
+    return _Planned(TriggerDecision(trigger_id, TriggerOutcome.EMITTED, **counts, plan=plan), winner, context)
 
 
 def _counts(results: list[EligibilityResult]) -> dict:
@@ -231,11 +220,11 @@ def _counts(results: list[EligibilityResult]) -> dict:
     }
 
 
-def _assemble(planned: list[_Planned]) -> tuple[dict[str, TriggerOutcome], list[DecisionPlan]]:
+def _assemble(planned: list[_Planned]) -> tuple[dict[str, TriggerOutcome], list[_Planned]]:
     """Walk actionable plans in Phase 2A order; keep the first per suppression key, up to the cap."""
     ranked = sorted((p for p in planned if p.winner is not None), key=lambda p: candidate_sort_key(p.winner))
     verdicts: dict[str, TriggerOutcome] = {}
-    selected: list[DecisionPlan] = []
+    selected: list[_Planned] = []
     keys: set[str] = set()
     for item in ranked:
         plan = item.decision.plan
@@ -245,12 +234,12 @@ def _assemble(planned: list[_Planned]) -> tuple[dict[str, TriggerOutcome], list[
             verdicts[plan.trigger_id] = TriggerOutcome.OVER_CAP
         else:
             verdicts[plan.trigger_id] = TriggerOutcome.EMITTED
-            selected.append(plan)
+            selected.append(item)
             keys.add(plan.suppression_key)
     return verdicts, selected
 
 
-def _allocate(state: StateContainer, selected: list[DecisionPlan], now: datetime) -> tuple[dict[str, str], list[TickAction]]:
+def _allocate(state: StateContainer, selected: list[_Planned], now: datetime) -> tuple[dict[str, str], list[TickAction]]:
     """Conversation ids and wire actions for the selected plans, in order. Reads the store, writes nothing.
 
     Ids are unique within the tick, so each ``(merchant_id, conversation_id)``
@@ -259,11 +248,12 @@ def _allocate(state: StateContainer, selected: list[DecisionPlan], now: datetime
     allocated: set[str] = set()
     conversation_ids: dict[str, str] = {}
     actions: list[TickAction] = []
-    for plan in selected:
+    for item in selected:
+        plan = item.decision.plan
         conversation_id = new_conversation_id(plan, now, lambda cid: cid in allocated or state.conversation_store.exists(cid))
         allocated.add(conversation_id)
         conversation_ids[plan.trigger_id] = conversation_id
-        actions.append(tick_action(plan, conversation_id))
+        actions.append(tick_action(plan, conversation_id, item.context))
     return conversation_ids, actions
 
 
@@ -286,7 +276,6 @@ def _commit(state: StateContainer, actions: list[TickAction], now: datetime) -> 
 __all__ = [
     "CONVERSATION_ID_PREFIX",
     "MAX_ACTIONS_PER_TICK",
-    "PLACEHOLDER_BODY_PREFIX",
     "WIRE_CTA",
     "TickResult",
     "TriggerDecision",
