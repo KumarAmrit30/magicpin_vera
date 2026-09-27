@@ -97,6 +97,7 @@ def candidate_sort_key(candidate: "DecisionCandidate") -> tuple:
         candidate.objective,
         candidate.suppression_key,
         candidate.selected_offer_id or "",
+        candidate.cta_type.value,
     )
 
 

@@ -50,6 +50,8 @@ class DecisionCore(BaseModel):
     * ``scope=customer`` requires ``customer_id``.
     * Customer-facing actions (``send_customer_*``) require ``scope=customer``.
     * ``scope=customer`` only allows customer-facing actions or ``no_action``.
+    * ``send_as`` must match the scope (``vera`` for merchant, ``merchant_on_behalf`` for customer).
+    * ``no_action`` carries no CTA.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -61,6 +63,8 @@ class DecisionCore(BaseModel):
     customer_id: NonEmptyStr | None = None
     objective: NonEmptyStr
     action: ActionType
+    cta_type: CTAType
+    send_as: SendAs
     evidence: tuple[Evidence, ...] = ()
     selected_offer_id: NonEmptyStr | None = None
     suppression_key: NonEmptyStr
@@ -75,6 +79,10 @@ class DecisionCore(BaseModel):
             raise ValueError(f"action={self.action} requires scope=customer")
         if is_customer_scope and not (self.action.targets_customer or self.action is ActionType.NO_ACTION):
             raise ValueError(f"action={self.action} cannot target a customer")
+        if self.send_as is not SEND_AS_BY_SCOPE[self.scope]:
+            raise ValueError(f"send_as={self.send_as} is inconsistent with scope={self.scope}")
+        if self.action is ActionType.NO_ACTION and self.cta_type is not CTAType.NONE:
+            raise ValueError("action=no_action requires cta_type=none")
         return self
 
 
@@ -94,16 +102,13 @@ class DecisionPlan(DecisionCore):
     """The decided action for one trigger, ready for Phase 3 composition.
 
     ``plan_id`` is computed with :func:`make_plan_id` when omitted and verified
-    when supplied. ``send_as`` must match the scope (``vera`` for merchant,
-    ``merchant_on_behalf`` for customer). A ``no_action`` plan carries no CTA.
-    ``confidence`` is deterministic decision certainty, not a probability.
+    when supplied. ``confidence`` is deterministic decision certainty, not a
+    probability.
     """
 
     plan_id: NonEmptyStr
     language_style: NonEmptyStr | None = None
     tone_profile: NonEmptyStr | None = None
-    cta_type: CTAType
-    send_as: SendAs
     priority_score: PriorityScore
     confidence: UnitInterval
     rationale_facts: tuple[NonEmptyStr, ...] = ()
@@ -138,10 +143,6 @@ class DecisionPlan(DecisionCore):
         )
         if self.plan_id != expected_id:
             raise ValueError("plan_id does not match the decision identity; derive it with make_plan_id()")
-        if self.send_as is not SEND_AS_BY_SCOPE[self.scope]:
-            raise ValueError(f"send_as={self.send_as} is inconsistent with scope={self.scope}")
-        if self.action is ActionType.NO_ACTION and self.cta_type is not CTAType.NONE:
-            raise ValueError("action=no_action requires cta_type=none")
         return self
 
     @property

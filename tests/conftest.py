@@ -4,8 +4,10 @@ Sample payloads are abbreviated from ``examples/api-call-examples.md``; the full
 seed dataset is loaded from the vendored challenge package when present.
 """
 
+import copy
+import functools
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.engine.candidates import CandidateGenerationContext
 from app.main import create_app
 from app.state.container import StateContainer
 
@@ -184,11 +187,44 @@ def candidate_fields(**overrides: Any) -> dict[str, Any]:
         "merchant_id": "m_001_drmeera_dentist_delhi",
         "objective": "share_research_digest",
         "action": "send_insight",
+        "cta_type": "open_ended",
+        "send_as": "vera",
         "suppression_key": "research:dentists:2026-W17",
         **dict.fromkeys(CANDIDATE_FEATURES, 0.5),
     }
     fields.update(overrides)
     return fields
+
+
+SEED_NOW = datetime(2026, 4, 26, 10, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+"""Simulated decision time matching the seed dataset (IPL match day, Case Study 5)."""
+
+
+@functools.cache
+def _seed_index() -> dict[str, dict[str, dict[str, Any]]]:
+    return {scope: dict(items) for scope, items in load_seed_dataset().items()}
+
+
+def seed_context_parts(trigger_id: str) -> dict[str, Any]:
+    """Deep copies of the category, merchant, trigger and customer payloads for a seed trigger."""
+    index = _seed_index()
+    trigger = index["trigger"][trigger_id]
+    merchant = index["merchant"][trigger["merchant_id"]]
+    customer_id = trigger.get("customer_id")
+    return copy.deepcopy(
+        {
+            "category": index["category"][merchant["category_slug"]],
+            "merchant": merchant,
+            "trigger": trigger,
+            "customer": index["customer"][customer_id] if customer_id else None,
+        }
+    )
+
+
+def seed_context(trigger_id: str, **overrides: Any) -> CandidateGenerationContext:
+    """A candidate-generation context for a seed trigger at :data:`SEED_NOW`."""
+    fields = {**seed_context_parts(trigger_id), "now": SEED_NOW, **overrides}
+    return CandidateGenerationContext(**fields)
 
 
 def plan_fields(**overrides: Any) -> dict[str, Any]:

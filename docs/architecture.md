@@ -2,8 +2,10 @@
 
 Phase 1A is the foundation for a deterministic message engine. It implements
 the HTTP contract, typed models and in-memory state. Phase 2A adds the decision
-domain (`app/engine/`), which is not yet wired into the API. The service still
-does **not** decide what to send: there is no planner, no composer and no LLM.
+domain (`app/engine/`); Phase 2B adds trigger classification and grounded
+candidate generation (`app/engine/candidates/`). None of it is wired into the
+API yet. The service still does **not** decide what to send: there is no
+eligibility, no winner selection, no composer and no LLM.
 
 Source of truth for the contract: `magicpin-ai-challenge/challenge-testing-brief.md` §2,
 `magicpin-ai-challenge/examples/api-call-examples.md`, and the seed dataset.
@@ -145,8 +147,7 @@ reads application state, the clock, or the network.
 Behavioral categories that say how a trigger should be reasoned about:
 `SAFETY_COMPLIANCE`, `ACTIVE_INTENT`, `CUSTOMER_TIMING`, `PERFORMANCE`,
 `MARKET_OPPORTUNITY`, `COMPETITIVE`, `OPERATIONS`. Many `trigger.kind` values
-(24 distinct kinds in `triggers_seed.json`) will map onto these. **The
-`kind → archetype` mapping is not implemented yet.**
+map onto these; the mapping is part of Phase 2B (see below).
 
 ### ActionType, DecisionScope, CTAType, SendAs
 
@@ -171,6 +172,12 @@ Target-consistency rules, enforced on candidates and plans:
 - `scope=customer` allows only `SEND_CUSTOMER_*` or `NO_ACTION`.
 - A merchant-scoped decision may still reference a `customer_id`, e.g. asking
   the merchant about one of their customers.
+- `send_as` must equal `SEND_AS_BY_SCOPE[scope]`.
+- `NO_ACTION` requires `cta_type=NONE`.
+
+`cta_type` and `send_as` live on `DecisionCore`, so a candidate already carries
+its planned CTA and sender. (Phase 2A had them on `DecisionPlan` only; Phase 2B
+moved them because generators plan the CTA.)
 
 ### Evidence
 
@@ -186,30 +193,27 @@ Target-consistency rules, enforced on candidates and plans:
 
 `is_grounded(evidence, source_data)` checks that the value at `field` really
 exists and equals `value`, with the same type, so `18.0` does not match `18`.
-This is how fabricated evidence is caught. Selecting evidence from context is
-**not implemented yet**.
+This is how fabricated evidence is caught. Evidence is selected from context by
+the Phase 2B generators.
 
 ### DecisionCandidate
 
 A possible action before ranking: the shared decision fields (`trigger_id`,
 `archetype`, `scope`, `merchant_id`, `customer_id`, `objective`, `action`,
-`evidence`, `selected_offer_id`, `suppression_key`, `expires_at`) plus seven
-normalized features: `urgency`, `time_pressure`, `merchant_relevance`,
-`conversation_relevance`, `actionability`, `evidence_strength`,
-`engagement_potential`. Each feature must be a finite number in [0.0, 1.0];
-bools, strings and out-of-range values are rejected. The features are scoring
-inputs, not the score. **Nothing computes these features yet.**
+`cta_type`, `send_as`, `evidence`, `selected_offer_id`, `suppression_key`,
+`expires_at`) plus seven normalized features: `urgency`, `time_pressure`,
+`merchant_relevance`, `conversation_relevance`, `actionability`,
+`evidence_strength`, `engagement_potential`. Each feature must be a finite
+number in [0.0, 1.0]; bools, strings and out-of-range values are rejected. The
+features are scoring inputs, not the score. They are computed by
+`app/engine/features.py` (Phase 2B).
 
 ### DecisionPlan
 
 The decided action handed to the composer: the shared decision fields plus
-`plan_id`, `language_style`, `tone_profile`, `cta_type`, `send_as`,
-`priority_score` (0–100), `confidence` (0–1) and `rationale_facts` (ordered
-factual strings, never prose). Invariants:
-
-- `send_as` must equal `SEND_AS_BY_SCOPE[scope]`.
-- `NO_ACTION` requires `cta_type=NONE`.
-- `plan_id` is derived when omitted and verified when supplied.
+`plan_id`, `language_style`, `tone_profile`, `priority_score` (0–100),
+`confidence` (0–1) and `rationale_facts` (ordered factual strings, never
+prose). `plan_id` is derived when omitted and verified when supplied.
 
 `confidence` is deterministic decision certainty, not a probability. Phase 2A
 only validates and stores it; no confidence algorithm exists yet.
@@ -245,7 +249,7 @@ candidate first:
    comparison with no reference to the current time
 6. lexical `trigger_id`
 7. then `action`, `merchant_id`, `customer_id`, `objective`,
-   `suppression_key`, `selected_offer_id`, so the order is total and never
+   `suppression_key`, `selected_offer_id`, `cta_type`, so the order is total and never
    depends on input order (several candidates can share a trigger)
 
 ### Plan IDs
@@ -266,14 +270,185 @@ and it carries no CTA.
 
 ### Phase 2A non-goals (not implemented)
 
-- `trigger.kind → TriggerArchetype` mapping
-- candidate generation
-- feature computation (merchant relevance, time pressure, ...)
+- `trigger.kind → TriggerArchetype` mapping (done in Phase 2B)
+- candidate generation (done in Phase 2B)
+- feature computation (done in Phase 2B)
 - customer eligibility and consent checks
 - offer matching
-- evidence extraction and selection
+- evidence extraction and selection (done in Phase 2B)
 - suppression decisions
 - conversation intent classification
 - confidence algorithm
 - `/v1/tick` and `/v1/reply` integration (both still behave exactly as in Phase 1A)
 - message composition, templates and LLM calls
+
+## Candidate Generation — Phase 2B
+
+Phase 2B turns a trigger plus its context into a list of grounded
+`DecisionCandidate`s. It proposes options; it does not choose one. The
+pipeline it will feed is *eligibility → scoring/ranking → planning →
+composition*.
+
+```text
+CandidateGenerationContext ──classify_trigger(trigger)──► TriggerArchetype | None
+        │                                                        │
+        │                              None ─► [] (unmapped: nothing is guessed)
+        ▼                                                        ▼
+generate_candidates ──GENERATORS[archetype]──► ArchetypeGenerator.generate
+                                                  │  handler for trigger.kind
+                                                  ▼
+                                               Proposal(s) ──realize──► DecisionCandidate
+                                                  (missing required fact ⇒ dropped)
+        ◄── grounding gate: every evidence item re-checked with is_grounded ──┘
+```
+
+### Modules
+
+| Module | Contents |
+|---|---|
+| `archetypes.py` | `TRIGGER_KIND_ARCHETYPES`, `TRIGGER_KIND_ALIASES`, `classify_trigger`, `classify_trigger_kind`, `canonical_trigger_kind` |
+| `features.py` | the seven feature functions, `compute_features`, conversation-state helpers, `tokens` |
+| `candidates/context.py` | `CandidateGenerationContext` (frozen, deep-copied payloads), `ConversationTurnView` |
+| `candidates/base.py` | `CandidateGenerator` protocol, `Proposal`, `realize`, `ArchetypeGenerator`, shared lookups |
+| `candidates/{safety,intent,customer,performance,opportunity,competitive,operations}.py` | one generator per archetype; one small handler per trigger kind |
+| `candidates/registry.py` | `GENERATORS` (read-only archetype → generator map), `generate_candidates` |
+
+### Classification
+
+The mapping is explicit and covers exactly the 26 kinds that occur in the
+dataset: 24 in `triggers_seed.json`, plus `appointment_tomorrow` and
+`customer_lapsed_soft`, which only `generate_dataset.py` emits. Three
+documented aliases share a dataset kind's handling: `research_digest_release`
+and `category_research_digest_release` (challenge brief) resolve to
+`research_digest`, and `bridal_followup` (Case Study 3) resolves to
+`wedding_package_followup`. Matching is exact: there is no case folding or fuzzy
+matching. Any other kind is unmapped, `classify_trigger` returns `None`, and no
+candidates are produced. Kinds that are only mentioned in prose
+(`weather_heatwave`, `local_news_event`, `category_trend_movement`,
+`scheduled_recurring`, `unplanned_slot_open`, `festival`) are deliberately
+unmapped until real payloads exist.
+
+| Archetype | Kinds |
+|---|---|
+| SAFETY_COMPLIANCE | `regulation_change`, `supply_alert` |
+| ACTIVE_INTENT | `active_planning_intent`, `curious_ask_due`, `dormant_with_vera` |
+| CUSTOMER_TIMING | `recall_due`, `appointment_tomorrow`, `trial_followup`, `chronic_refill_due`, `customer_lapsed_soft`, `customer_lapsed_hard`, `wedding_package_followup` |
+| PERFORMANCE | `perf_dip`, `perf_spike`, `seasonal_perf_dip`, `milestone_reached` |
+| MARKET_OPPORTUNITY | `research_digest`, `festival_upcoming`, `category_seasonal`, `ipl_match_today`, `cde_opportunity` |
+| COMPETITIVE | `competitor_opened` |
+| OPERATIONS | `renewal_due`, `winback_eligible`, `gbp_unverified`, `review_theme_emerged` |
+
+In the data, `renewal_due` and `winback_eligible` are merchant-scoped and concern
+the merchant's own magicpin subscription (`days_remaining`, `renewal_amount`,
+`days_since_expiry`). They are account operations, not customer timing.
+
+### Context
+
+`CandidateGenerationContext(category, merchant, trigger, customer?, conversation?, now)`
+is frozen, and its payloads are deep-copied on construction, so neither the
+caller nor a generator can mutate shared state. Construction validates each
+payload against the Phase 1A domain models and rejects inconsistent joins:
+merchant and category slug must agree; the trigger and merchant IDs must
+agree; a customer is required exactly when the trigger names one, and it must
+belong to the merchant. `now` is the simulated decision time and must be
+timezone-aware. `conversation` accepts a store `Conversation` or its dict form.
+Conversation turns are read from `merchant.conversation_history` (ordered by
+timestamp) followed by the live conversation's turns.
+
+### Generators and grounding
+
+A handler returns `Proposal`s. Each proposal names an action, objective and
+CTA, plus its `required` and `supporting` evidence. Evidence is only ever built
+by resolving a real path in the context (`ctx.evidence(...)`), so a missing
+fact comes back as `None` rather than a guess. `realize` drops a proposal
+whenever any `required` item is `None`. Every candidate also cites
+`trigger.kind` (importance 0.2). Evidence is de-duplicated by path and sorted
+by importance, then source, then path. `generate_candidates` re-checks every
+evidence item with `is_grounded` and drops any candidate that fails, including
+candidates from custom generators. Output within a trigger is sorted by
+action, objective, offer, CTA and customer; that order is stable, not a
+ranking.
+
+Scope follows the action: `SEND_CUSTOMER_*` (and `NO_ACTION` on a customer
+trigger) is customer-scoped and sent as `merchant_on_behalf`; everything else
+is merchant-scoped and sent as `vera`, and may reference the customer.
+`selected_offer_id` is only ever the ID of an **active** offer in
+`merchant.offers`. Nothing is created, discounted or chosen from the category
+catalog.
+
+Generated (placeholder) triggers carry `{"placeholder": true}` payloads. For
+these, handlers fall back to merchant, customer and category state:
+`performance.delta_7d`, `relationship.last_visit`, `review_themes`,
+`subscription`, and the category digest. Such fallback evidence is cited with
+lower importance, and the placeholder payload itself is never cited. When the
+facts that matter cannot be found (an unnamed festival or competitor, a
+milestone without numbers), the result is `NO_ACTION`.
+
+### Behavior by archetype
+
+- **Safety/compliance:** `SEND_ALERT`, plus `RECOMMEND_OPERATIONAL_FIX` when the
+  digest item lists a required step. A supply recall adds a `DRAFT_MESSAGE` to
+  notify chronic-Rx customers and an `ASK_MERCHANT` about stock. If the
+  regulation or batches cannot be cited, the only candidate is `NO_ACTION`.
+- **Active intent:** an explicit planning message yields `DRAFT_ARTIFACT` with
+  CTA `CONFIRMATION`, never a qualifying question. A related active offer adds
+  a `DRAFT_CAMPAIGN`. `ASK_MERCHANT` appears only when no merchant message backs
+  the intent. `curious_ask_due` asks an open question unless the merchant's
+  latest turn is an unanswered request. In that case the request is answered
+  first, with the draft type Vera had offered (posts → `DRAFT_POST`,
+  list/message → `DRAFT_MESSAGE`, ...). `dormant_with_vera` yields
+  `ASK_MERCHANT`, plus a `SEND_INSIGHT` on the merchant's largest 7-day move.
+- **Customer timing:** each kind has a `CustomerMoment` (reminder, follow-up or
+  win-back) grounded in its payload facts. A slot or option list makes the CTA
+  `CONFIRMATION`. Every moment also yields a merchant-facing `DRAFT_MESSAGE`
+  for approval; lapse moments add `RECOMMEND_RETENTION` when an aggregate shows
+  a lapse pattern. Consent is not evaluated here.
+- **Performance:** a dip yields `SEND_ALERT`, plus `RECOMMEND_OPERATIONAL_FIX`
+  only for recorded listing gaps, and `DRAFT_CAMPAIGN` only per existing
+  active offer. A spike yields `SEND_INSIGHT` (CTA `NONE`), `DRAFT_POST` when
+  a post drove it, and offer campaigns; it is never alerted or "fixed". An
+  expected seasonal dip yields a reframing `SEND_INSIGHT`, `NO_ACTION`, and
+  `RECOMMEND_RETENTION` when a member count exists. If the numbers contradict
+  the trigger's direction, the result is `NO_ACTION`.
+- **Market opportunity:** for a weekend IPL match, where the category digest
+  shows weekend matches underperform, the result is a contrarian
+  `SEND_INSIGHT` plus a delivery-first `DRAFT_CAMPAIGN` on the existing offer
+  (Case Study 5). A match in another city yields `NO_ACTION`. For festivals,
+  categories outside `category_relevance` get `NO_ACTION`; festivals more than
+  45 days out also add `NO_ACTION`. A research digest yields `SEND_INSIGHT`,
+  citing merchant cohorts that match the item's patient segment.
+- **Competitive:** competitor facts come only from the trigger payload. With no
+  named competitor, the result is `NO_ACTION`, plus `DRAFT_LISTING` on the
+  merchant's top positive review theme, without mentioning a competitor.
+- **Operations:** renewal is raised only within 30 days and only for an
+  active or trial subscription. A value recap is added only when some 7-day
+  metric is up. A merchant winback, a GBP verification or a review theme
+  whose premise the merchant's state contradicts yields `NO_ACTION`.
+
+### Feature calculation (`features.py`)
+
+All features are rounded to 4 decimals and lie in [0, 1].
+
+| Feature | Computation |
+|---|---|
+| urgency | `trigger.urgency / 5`; 0 if absent |
+| time_pressure | nearest of `trigger.expires_at` and a fact-backed deadline (due date, run-out date, festival date, match time, renewal date), stepped: ≤24h 1.0, ≤72h 0.8, ≤7d 0.6, ≤14d 0.4, ≤30d 0.2, else 0; passed deadline → 0; `appointment_tomorrow` → 1.0 |
+| merchant_relevance | `0.3 + 0.1 × (merchant/customer facts cited)` |
+| conversation_relevance | 1.0 continues an explicit merchant request; 0.9 topical and merchant engaged (0.3 if the action would only restate it); 0.6 topical; 0.3 engaged but off-topic; 0.1 cold; 0 with no conversation |
+| actionability | per-action base (ask 0.8, alert 0.7, insight 0.6, recommend/customer send/draft message 0.5, other drafts 0.4) `+ 0.15 × concrete assets` (offer, slots, required step, ...) |
+| evidence_strength | `0.7 × max(importance) + 0.3 × min(1, (count − 1) / 4)` |
+| engagement_potential | per-action base, ±0.2 for merchant engagement / unresponsiveness (history tags and signals); for customer sends, a shift by customer state |
+
+`NO_ACTION` candidates carry zero urgency, time pressure, conversation
+relevance and engagement, and full actionability. They compete on
+merchant relevance and evidence strength, i.e. on how strongly the state
+supports staying quiet. Topic matching uses normalized word sets (`tokens`), not
+substring search.
+
+### Phase 2B non-goals (not implemented)
+
+- ranking candidates into a winner (`best_candidate`)
+- customer eligibility, consent, frequency caps, suppression decisions
+- offer selection across multiple offers (each active offer is its own candidate)
+- `/v1/tick` and `/v1/reply` integration (both still behave exactly as in Phase 1A)
+- planning, confidence, message composition, templates and LLM calls

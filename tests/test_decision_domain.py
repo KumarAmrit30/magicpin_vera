@@ -268,9 +268,12 @@ def test_candidate_is_frozen_and_forbids_extra_fields() -> None:
         DecisionCandidate(**candidate_fields(score=99.0))
 
 
+CUSTOMER_SCOPE = {"scope": "customer", "send_as": "merchant_on_behalf"}
+
+
 def test_customer_scope_requires_customer_id() -> None:
     with pytest.raises(ValidationError, match="requires customer_id"):
-        DecisionCandidate(**candidate_fields(scope="customer", action="send_customer_reminder"))
+        DecisionCandidate(**candidate_fields(**CUSTOMER_SCOPE, action="send_customer_reminder"))
 
 
 def test_customer_action_requires_customer_scope() -> None:
@@ -280,14 +283,34 @@ def test_customer_action_requires_customer_scope() -> None:
 
 def test_customer_scope_rejects_merchant_facing_action() -> None:
     with pytest.raises(ValidationError, match="cannot target a customer"):
-        DecisionCandidate(**candidate_fields(scope="customer", customer_id="c_001_priya_for_m001", action="draft_post"))
+        DecisionCandidate(**candidate_fields(**CUSTOMER_SCOPE, customer_id="c_001_priya_for_m001", action="draft_post"))
 
 
 @pytest.mark.parametrize("action", ["send_customer_reminder", "send_customer_winback", "send_customer_followup", "no_action"])
 def test_customer_scope_accepts_customer_actions_and_no_action(action: str) -> None:
-    candidate = DecisionCandidate(**candidate_fields(scope="customer", customer_id="c_001_priya_for_m001", action=action))
+    cta = "none" if action == "no_action" else "confirmation"
+    candidate = DecisionCandidate(
+        **candidate_fields(**CUSTOMER_SCOPE, customer_id="c_001_priya_for_m001", action=action, cta_type=cta)
+    )
 
     assert candidate.scope is DecisionScope.CUSTOMER
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"send_as": "merchant_on_behalf"},
+        {"scope": "customer", "customer_id": "c_1", "action": "send_customer_reminder", "send_as": "vera"},
+    ],
+)
+def test_candidate_send_as_must_match_scope(override: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError, match="inconsistent with scope"):
+        DecisionCandidate(**candidate_fields(**override))
+
+
+def test_no_action_candidate_requires_no_cta() -> None:
+    with pytest.raises(ValidationError, match="requires cta_type=none"):
+        DecisionCandidate(**candidate_fields(action="no_action", cta_type="yes_no"))
 
 
 def test_merchant_scope_may_reference_a_customer() -> None:

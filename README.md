@@ -28,16 +28,24 @@ Implemented in `app/engine/` (not yet connected to the API):
 - deterministic plan IDs
 - deterministic ranking primitives
 
+## Phase 2B — Candidate Generation
+
+Implemented in `app/engine/` (not yet connected to the API):
+
+- explicit `trigger.kind → TriggerArchetype` mapping for all 26 dataset kinds (unknown kinds stay unmapped)
+- one candidate generator per archetype in `app/engine/candidates/`, dispatched through a registry
+- `generate_candidates(context)`: grounded `DecisionCandidate`s with planned CTA, `send_as` and all seven features (`app/engine/features.py`)
+- every evidence item is re-checked against the context; ungrounded candidates are dropped
+
 Not yet implemented:
 
-- candidate generation
-- eligibility
-- trigger mapping
-- planner integration
+- eligibility (consent, frequency, suppression)
+- winner selection
+- planner integration (`/v1/tick`, `/v1/reply`)
 - message composition
 
 Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A"
-section of [`docs/architecture.md`](docs/architecture.md).
+and "Candidate Generation — Phase 2B" sections of [`docs/architecture.md`](docs/architecture.md).
 
 ## Architecture
 
@@ -48,9 +56,10 @@ app/
 ├── clock.py           injectable UTC clock
 ├── api/               health.py (healthz, metadata), context.py, tick.py, reply.py, deps.py
 ├── models/            enums.py, schemas.py (API contract), domain.py (context payloads)
-├── engine/            decision domain: archetypes, actions, evidence, scoring, plans (no FastAPI)
+├── engine/            decision domain: archetypes, actions, evidence, features, scoring, plans (no FastAPI)
+│   └── candidates/    context, registry, and one generator per trigger archetype
 └── state/             context_store.py, conversation_store.py, suppression_store.py, container.py
-tests/                 store unit tests, HTTP contract tests, domain-model tests
+tests/                 store, HTTP contract, domain-model, decision-domain and candidate-generation tests
 docs/architecture.md   layer design, versioning table, documented deviations
 magicpin-ai-challenge/ official challenge package, vendored unmodified
 ```
