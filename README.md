@@ -19,6 +19,26 @@ Implemented:
 `{"actions": []}`, and `/v1/reply` records the message and answers `wait`
 (or `end` for an already-closed conversation). No messages are composed.
 
+## Phase 2A — Decision Domain
+
+Implemented in `app/engine/` (not yet connected to the API):
+
+- decision domain models (`TriggerArchetype`, `ActionType`, `DecisionScope`, `CTAType`, `Evidence`, `DecisionCandidate`, `DecisionPlan`)
+- candidate scoring primitives (weighted 0–100 score, validated 0–1 features)
+- deterministic plan IDs
+- deterministic ranking primitives
+
+Not yet implemented:
+
+- candidate generation
+- eligibility
+- trigger mapping
+- planner integration
+- message composition
+
+Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A"
+section of [`docs/architecture.md`](docs/architecture.md).
+
 ## Architecture
 
 ```text
@@ -28,6 +48,7 @@ app/
 ├── clock.py           injectable UTC clock
 ├── api/               health.py (healthz, metadata), context.py, tick.py, reply.py, deps.py
 ├── models/            enums.py, schemas.py (API contract), domain.py (context payloads)
+├── engine/            decision domain: archetypes, actions, evidence, scoring, plans (no FastAPI)
 └── state/             context_store.py, conversation_store.py, suppression_store.py, container.py
 tests/                 store unit tests, HTTP contract tests, domain-model tests
 docs/architecture.md   layer design, versioning table, documented deviations

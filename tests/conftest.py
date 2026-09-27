@@ -162,3 +162,49 @@ def load_seed_dataset() -> dict[str, list[tuple[str, dict[str, Any]]]]:
 
 
 requires_dataset = pytest.mark.skipif(not DATASET_DIR.is_dir(), reason="official challenge dataset not vendored")
+
+
+CANDIDATE_FEATURES = (
+    "urgency",
+    "time_pressure",
+    "merchant_relevance",
+    "conversation_relevance",
+    "actionability",
+    "evidence_strength",
+    "engagement_potential",
+)
+
+
+def candidate_fields(**overrides: Any) -> dict[str, Any]:
+    """Valid merchant-scoped DecisionCandidate fields; every feature defaults to 0.5."""
+    fields: dict[str, Any] = {
+        "trigger_id": "trg_001_research_digest_dentists",
+        "archetype": "market_opportunity",
+        "scope": "merchant",
+        "merchant_id": "m_001_drmeera_dentist_delhi",
+        "objective": "share_research_digest",
+        "action": "send_insight",
+        "suppression_key": "research:dentists:2026-W17",
+        **dict.fromkeys(CANDIDATE_FEATURES, 0.5),
+    }
+    fields.update(overrides)
+    return fields
+
+
+def plan_fields(**overrides: Any) -> dict[str, Any]:
+    """Valid merchant-scoped DecisionPlan fields (plan_id left to be derived)."""
+    fields: dict[str, Any] = {
+        "trigger_id": "trg_001_research_digest_dentists",
+        "archetype": "market_opportunity",
+        "scope": "merchant",
+        "merchant_id": "m_001_drmeera_dentist_delhi",
+        "objective": "share_research_digest",
+        "action": "send_insight",
+        "suppression_key": "research:dentists:2026-W17",
+        "cta_type": "open_ended",
+        "send_as": "vera",
+        "priority_score": 62.5,
+        "confidence": 0.8,
+    }
+    fields.update(overrides)
+    return fields
