@@ -13,8 +13,11 @@ through untouched.
 Grounding. A reply may only use:
 
 * the topic of the conversation's trigger (a fixed phrase per trigger kind);
-* the first fact of the tick message that opened the conversation (already
-  grounded by the Phase 3A composer);
+* sentences of the tick message that opened the conversation (already
+  grounded by the Phase 3A composer): the first one as the reason, and the one
+  that answers a question (Phase 3C, ``reply_facts``);
+* for a customer, the few context fields ``reply_facts`` reads verbatim
+  (active offers, slots, due date, appointment, last visit);
 * the pending offer in the latest Vera turn ("I can draft …", "Reply CONFIRM
   to book …"), i.e. what Vera already proposed;
 * identity from context (salutation / greeting) for the first Vera turn of a
@@ -34,7 +37,18 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from app.engine.archetypes import canonical_trigger_kind
-from app.engine.composer import TemplateWriter, customer_greeting, merchant_salutation
+from app.engine.composer import TemplateWriter, customer_greeting, join_words, merchant_salutation
+from app.engine.reply_facts import (
+    Answer,
+    Fact,
+    FactKind,
+    customer_context_facts,
+    opener_body,
+    opener_facts,
+    opener_sentences,
+    select,
+    sentences,
+)
 from app.models.enums import ContextScope, CtaType, TurnRole
 from app.models.schemas import SendReply
 from app.state.context_store import ContextStore
@@ -79,6 +93,10 @@ class ReplyContext:
     """``(pattern, values, refs)``; only when Vera has not spoken in this conversation yet."""
     asks_why: bool = False
     earlier_bodies: frozenset[str] = frozenset()
+    answer: Answer | None = None
+    """The facts the inbound question asked for (Phase 3C); ``None`` when it asked for none."""
+    fresh_fact: str | None = None
+    """The first opener fact no Vera reply has quoted yet, for general questions."""
 
 
 # --------------------------------------------------------------------------- #
@@ -134,6 +152,8 @@ LEADS: dict[tuple[str, Voice], tuple[str, ...]] = {
     ("affirmative", Voice.BUSINESS): ("Great.", "Noted.", "Wonderful."),
     ("question", Voice.VERA): ("Good question.", "Fair question.", "Happy to help."),
     ("question", Voice.BUSINESS): ("Good question.", "Happy to help.", "Thanks for asking."),
+    ("answer", Voice.VERA): ("", "Sure.", "Happy to clarify."),
+    ("answer", Voice.BUSINESS): ("", "Sure.", "Happy to help."),
     ("why", Voice.VERA): ("Here's why I raised it:", "Here's what prompted it:", "The reason I raised it:"),
     ("why", Voice.BUSINESS): ("Here's why we reached out:", "Here's what prompted it:", "The reason we reached out:"),
     ("objection", Voice.VERA): ("Fair point.", "Understood.", "That's fair."),
@@ -161,13 +181,32 @@ OPEN_QUESTIONS: dict[tuple[str, Voice], str] = {
     ("why", Voice.VERA): "Which part should I start with?",
     ("objection", Voice.VERA): "What would make it worthwhile for you?",
     ("off_topic", Voice.VERA): "What would you like to do next?",
+    ("answer", Voice.VERA): "What would you like to do next?",
     ("question", Voice.BUSINESS): "What works best for you?",
+    ("answer", Voice.BUSINESS): "What works best for you?",
     ("why", Voice.BUSINESS): "What works best for you?",
     ("objection", Voice.BUSINESS): "What would work better for you?",
     ("off_topic", Voice.BUSINESS): "What works for you?",
 }
 
 PRONOUN = {Voice.VERA: ("I", "I'll"), Voice.BUSINESS: ("We", "we'll")}
+
+MISSING: dict[str, str] = {
+    "price": "the price",
+    "availability": "open slots",
+    "appointment": "a booked appointment",
+    "due": "a due date",
+    "deadline": "a deadline",
+    "count": "that number",
+    "change": "that figure",
+    "source": "a source",
+    "last_visit": "a previous visit",
+    "date": "a date",
+}
+"""What the recipient asked for, named when no grounded fact answers it."""
+
+STOP_WORD = "STOP"
+"""The challenge brief's binary exit word (``YES/STOP``); Phase 2F reads it as an opt-out and ends the conversation."""
 
 
 # --------------------------------------------------------------------------- #
@@ -176,7 +215,7 @@ PRONOUN = {Voice.VERA: ("I", "I'll"), Voice.BUSINESS: ("We", "we'll")}
 
 OFFER_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?:^|(?<=\s))(?:I|[Ww]e) can (?P<x>.+?)\.(?=\s|$)"), "{}"),
-    (re.compile(r"Reply CONFIRM and (?:I|we)'ll (?P<x>.+?), or CANCEL to stop\."), "{}"),
+    (re.compile(r"Reply CONFIRM and (?:I|we)'ll (?P<x>.+?), or (?:CANCEL|STOP) to (?:stop|end here)\."), "{}"),
     (re.compile(r"Reply CONFIRM and I'll (?P<x>.+?)\.(?=\s|$)"), "{}"),
     (re.compile(r"Reply CONFIRM to (?P<x>.+?)\.(?=\s|$)"), "{}"),
     (re.compile(r"(?:Want me to|Want us to|[Ss]hall we|Want to) (?P<x>.+?)(?: for you)?\?"), "{}"),
@@ -184,21 +223,7 @@ OFFER_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 """How Vera's own messages (Phase 3A tick messages and these replies) phrase the pending offer."""
 
-TITLES = ("Dr.", "Mr.", "Mrs.", "Ms.")
 UNUSABLE = re.compile(r"[\[\]{}?]")
-
-
-def sentences(text: str) -> list[str]:
-    """Split on sentence ends, keeping honorifics like ``Dr.`` attached."""
-    out, start = [], 0
-    for match in re.finditer(r"[.!?\u201d]\s+", text):
-        end = match.start() + 1
-        if text[:end].endswith(TITLES):
-            continue
-        out.append(text[start:end].strip())
-        start = match.end()
-    tail = text[start:].strip()
-    return [*out, tail] if tail else out
 
 
 def pending_offer(conversation: Conversation) -> tuple[str, str] | None:
@@ -216,16 +241,9 @@ def pending_offer(conversation: Conversation) -> tuple[str, str] | None:
 
 def opening_fact(conversation: Conversation) -> str | None:
     """The first fact of the tick message that opened the conversation, without its greeting."""
-    if conversation.trigger_id is None or not conversation.turns:
+    text = opener_body(conversation)
+    if text is None:
         return None
-    opener = conversation.turns[0]
-    if opener.role is not TurnRole.VERA or "[uncomposed" in opener.body:
-        return None
-    text = opener.body
-    if " \u2014 " in text[:60]:
-        text = text.split(" \u2014 ", 1)[1]
-    elif (here := text.find(" here. ")) != -1 and here < 120:
-        text = text[here + len(" here. "):]
     parts = sentences(text)
     if not parts:
         return None
@@ -260,6 +278,16 @@ def reply_context(conversation: Conversation, contexts: ContextStore) -> ReplyCo
             (pattern, *values), refs = salutation
             greeting = (f"{pattern} \u2014", tuple(values), refs)
 
+    vera_turns = [t.body for t in conversation.turns if t.role is TurnRole.VERA and "[uncomposed" not in t.body]
+    pool = opener_facts(conversation)
+    if voice is Voice.BUSINESS:
+        merchant = payload(ContextScope.MERCHANT, conversation.merchant_id)
+        category = payload(ContextScope.CATEGORY, merchant.get("category_slug")) if merchant else None
+        taboos = [t.lower() for t in ((category or {}).get("voice") or {}).get("vocab_taboo") or [] if isinstance(t, str)]
+        pool = customer_context_facts(trigger, merchant, payload(ContextScope.CUSTOMER, conversation.customer_id), taboos) + pool
+    answer = select(inbound.body, pool, vera_turns)
+    replies = " ".join(vera_turns[1:]) if conversation.trigger_id else " ".join(vera_turns)
+
     offer = pending_offer(conversation)
     return ReplyContext(
         voice=voice,
@@ -270,6 +298,8 @@ def reply_context(conversation: Conversation, contexts: ContextStore) -> ReplyCo
         greeting=greeting,
         asks_why=re.search(r"\bwhy\b", inbound.body.lower()) is not None,
         earlier_bodies=frozenset(t.body for t in conversation.turns if t.role is TurnRole.VERA),
+        answer=answer if answer.asked else None,
+        fresh_fact=next((s for s in opener_sentences(conversation) if s not in replies), None),
     )
 
 
@@ -280,7 +310,12 @@ def reply_context(conversation: Conversation, contexts: ContextStore) -> ReplyCo
 
 def compose_reply(intent: str, cta: CtaType, context: ReplyContext) -> ComposedReply:
     """Word a Phase 2F ``send`` for ``intent`` with the decided ``cta``. Pure and deterministic."""
-    key = "why" if intent == "question" and context.asks_why and context.reason else intent
+    if intent == "question" and context.asks_why and context.reason:
+        key = "why"
+    elif intent == "question" and context.answer is not None:
+        key = "answer"
+    else:
+        key = intent
     leads = LEADS.get((key, context.voice)) or LEADS[("unclear", context.voice)]
     candidate = None
     for lead in leads:
@@ -311,20 +346,25 @@ def _build(intent: str, key: str, lead: str, cta: CtaType, context: ReplyContext
     prefix = lead if intent in PREFIX_LEADS else None
     if context.greeting is not None:
         pattern, values, refs = context.greeting
-        if prefix is None:
+        if prefix is None and lead:
             add(f"{pattern} {lead}", *values, refs=refs)
         else:
             add(pattern, *values, refs=refs)
-    elif prefix is None:
+    elif prefix is None and lead:
         add(lead)
 
     def cta_sentence(pattern: str, *values: str, refs: tuple[str, ...] = ()) -> None:
         add(f"{prefix} {pattern[0].lower()}{pattern[1:]}" if prefix else pattern, *values, refs=refs)
 
+    answered = ""
     if key == "why":
         add("{}", context.reason, refs=("turn:0",))
-    elif intent == "question" and context.reason:
-        add(("What I have on record: {}" if voice is Voice.VERA else "What we have on record: {}"), context.reason, refs=("turn:0",))
+    elif key == "answer" and context.answer is not None:
+        for pattern, values, refs in answer_lines(context.answer, voice):
+            add(pattern, *values, refs=refs)
+        answered = " ".join(writer.body)
+    elif intent == "question" and (fact := context.fresh_fact or context.reason):
+        add(("What I have on record: {}" if voice is Voice.VERA else "What we have on record: {}"), fact, refs=("turn:0",))
     elif intent == "objection" and context.reason:
         add(("I raised it because of this: {}" if voice is Voice.VERA else "We reached out because of this: {}"),
             context.reason, refs=("turn:0",))
@@ -338,12 +378,13 @@ def _build(intent: str, key: str, lead: str, cta: CtaType, context: ReplyContext
         if prefix is not None:
             add(prefix.rstrip(" ,\u2014") + ".")
             prefix = None
+        stop = f", or {STOP_WORD} to end here."
         if context.offer:
-            cta_sentence(f"Reply CONFIRM and {ill} {{}}, or CANCEL to stop.", context.offer, refs=offer_ref)
+            cta_sentence(f"Reply CONFIRM and {ill} {{}}{stop}", context.offer, refs=offer_ref)
         elif context.topic:
-            cta_sentence(f"Reply CONFIRM and {ill} take the next step on {{}}, or CANCEL to stop.", context.topic, refs=topic_ref)
+            cta_sentence(f"Reply CONFIRM and {ill} take the next step on {{}}{stop}", context.topic, refs=topic_ref)
         else:
-            cta_sentence(f"Reply CONFIRM and {ill} take the next step, or CANCEL to stop.")
+            cta_sentence(f"Reply CONFIRM and {ill} take the next step{stop}")
     elif cta is CtaType.BINARY_YES_NO:
         ask = "Want me to" if voice is Voice.VERA else "Shall we"
         cont = "Should I continue" if voice is Voice.VERA else "Shall we continue"
@@ -357,9 +398,12 @@ def _build(intent: str, key: str, lead: str, cta: CtaType, context: ReplyContext
         if context.offer and returning:
             add(f"Coming back to {{}}: {'we' if voice is Voice.BUSINESS else 'I'} can {{}}.", context.topic, context.offer,
                 refs=(*topic_ref, *offer_ref))
-        elif context.offer:
+        elif context.offer and not (answered and context.offer.split(" ", 1)[-1] in answered):
             add(f"{i} can {{}}.", context.offer, refs=offer_ref)
-        cta_sentence(OPEN_QUESTIONS.get((key, voice)) or OPEN_QUESTIONS[("off_topic", voice)])
+        slots = key == "answer" and context.answer is not None and any(
+            f.kind is FactKind.AVAILABILITY for f in (*context.answer.facts, *context.answer.fallbacks))
+        cta_sentence("Which slot works best for you?" if slots and voice is Voice.BUSINESS
+                     else OPEN_QUESTIONS.get((key, voice)) or OPEN_QUESTIONS[("off_topic", voice)])
     elif prefix is not None:
         add(prefix.rstrip(" ,\u2014") + ".")
 
@@ -374,6 +418,41 @@ def _build(intent: str, key: str, lead: str, cta: CtaType, context: ReplyContext
         template=" ".join(writer.template),
         sources=tuple(sources),
     )
+
+
+Line = tuple[str, tuple[str, ...], tuple[str, ...]]
+
+
+def answer_lines(answer: Answer, voice: Voice) -> list[Line]:
+    """Sentences answering the question: selected facts first, then what is missing and any related fallback."""
+    lines = [_fact_line(fact, answer, voice) for fact in answer.facts]
+    for request in answer.missing:
+        noun = MISSING.get(request.name, "that")
+        lines.append((f"We don't have {noun} on file." if voice is Voice.BUSINESS else f"I don't have {noun} on record.", (), ()))
+    lines.extend(_fact_line(fact, answer, voice) for fact in answer.fallbacks)
+    return lines
+
+
+def _fact_line(fact: Fact, answer: Answer, voice: Voice) -> Line:
+    refs = (fact.ref,)
+    business = voice is Voice.BUSINESS
+    if fact.kind is FactKind.PRICE and fact.structured:
+        return ("Our current offer is {}." if business else "The current offer is {}."), (fact.values[0],), refs
+    if fact.kind is FactKind.AVAILABILITY and fact.structured:
+        have = "we have" if business else "there's"
+        everything = join_words(fact.values, "or")
+        part = answer.part_of_day
+        if part and fact.ref in answer.matching_slots:
+            matching = answer.matching_slots[fact.ref]
+            if not matching:
+                article = "an" if part[0] in "aeiou" else "a"
+                subject = "We don't have" if business else "There's no"
+                return f"{subject} {article} {part} slot open. The open slots are {{}}.", (everything,), refs
+            everything = join_words(matching, "or")
+        if answer.yes_no_form:
+            return f"Yes \u2014 {have} {{}} open.", (everything,), refs
+        return f"{have[0].upper()}{have[1:]} {{}} open.", (everything,), refs
+    return "{}", (fact.sentence,), refs
 
 
 def realize(decision: "ReplyDecision", conversation: Conversation, contexts: ContextStore) -> "ReplyDecision":

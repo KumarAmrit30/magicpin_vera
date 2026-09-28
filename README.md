@@ -90,9 +90,21 @@ Implemented in `app/engine/reply_composer.py`; `handle_reply` calls `realize` be
 
 - words only `send` responses; action, `cta`, `wait_seconds`, rationale, state transition and suppression are the Phase 2F decision, unchanged
 - grounded in the conversation itself: the topic comes from the trigger kind, the reason from the tick opener's first fact, and the offer from Vera's latest message; anything missing is left out
-- one CTA matching the decision (`Reply CONFIRM … or CANCEL to stop.` for affirmatives, one question for `binary_yes_no`/`open_ended`)
+- one CTA matching the decision (`Reply CONFIRM … or STOP to end here.` for affirmatives, one question for `binary_yes_no`/`open_ended`)
 - merchant replies speak as Vera ("I"); customer replies speak as the business ("we") and never mention Vera
 - deterministic (no clock, randomness or LLM); bodies never repeat within a conversation
+
+## Phase 3C — Question Relevance
+
+Implemented in `app/engine/reply_facts.py`, used by the reply composer:
+
+- a question is matched against a fixed table of requests (price, open slots, appointment, due date, deadline, last visit, count, change, source, date) and answered with the grounded fact of that kind, not the opener's first fact
+- facts are the tick opener's sentences, plus, for customers only, verbatim context fields (slot labels, due/appointment/last-visit dates, active `Item @ ₹N` offers)
+- ranking: word overlap with the question, mentioned in Vera's latest message, mentioned earlier, then fixed order; a part of day ("evening slots") filters slots by their ISO time
+- missing facts are said to be missing ("We don't have the price on file."), never guessed; ambiguous questions keep the Phase 2F reading
+- Phase 2F is unchanged. `CANCEL` is no longer advertised because the challenge materials only use `CONFIRM`/`YES`/`STOP`; Phase 2F still reads "Cancel" as unclear (documented limitation)
+
+Details: [`docs/phase-3c-fact-relevance.md`](docs/phase-3c-fact-relevance.md).
 
 Not yet implemented:
 

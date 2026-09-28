@@ -606,3 +606,19 @@ ReplyDecision (Phase 2F, authoritative)
 - Reuses `TemplateWriter`, `merchant_salutation` and `customer_greeting` from the Phase 3 composer.
 
 Details: [`phase-3b-reply-composer.md`](phase-3b-reply-composer.md).
+
+## Question Relevance — Phase 3C
+
+`app/engine/reply_facts.py`: `select(message, pool, vera_turns) -> Answer`, called from `reply_context`.
+
+```text
+question ─► requests (fixed phrase table → fact kinds, ≤ 2)
+         ─► pool: opener sentences tagged by kind (+ customer context fields for customer voice)
+         ─► rank per request: question-word overlap, in latest Vera turn, in earlier turns, structured/sentence, order
+         ─► Answer(facts, missing, fallbacks, part_of_day) ─► compose_reply key "answer"
+```
+
+- Wording only: it reads the conversation and contexts, never the Phase 2F decision inputs, and changes no decision field.
+- Questions with no recognised request fall back to the Phase 3B general answer; "Cancel" stays unclear in Phase 2F.
+
+Details: [`phase-3c-fact-relevance.md`](phase-3c-fact-relevance.md).

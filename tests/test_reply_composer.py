@@ -195,7 +195,7 @@ def test_lets_do_it_switches_to_action_with_an_explicit_next_step() -> None:
     body = decision.response.body
 
     assert decision.response.cta is CtaType.BINARY_CONFIRM_CANCEL
-    assert body == "Great. Reply CONFIRM and I'll draft a short explainer you can share with your patients, or CANCEL to stop."
+    assert body == "Great. Reply CONFIRM and I'll draft a short explainer you can share with your patients, or STOP to end here."
     assert not any(w in body.lower() for w in ["would you", "do you", "can you tell", "what if", "how about"])
     assert not re.search(r"\b(done|is live|sent|scheduled)\b", body.lower())
 
@@ -330,7 +330,7 @@ def test_customer_replies_speak_as_the_business_and_leak_nothing(trigger_id: str
 
 def test_first_reply_on_a_judge_opened_merchant_conversation_uses_the_salutation() -> None:
     decision = judge_reply(seeded(), REPRESENTATIVE["affirmative"], "conv_intent_1")
-    assert decision.response.body == "Dr. Meera \u2014 Great. Reply CONFIRM and I'll take the next step, or CANCEL to stop."
+    assert decision.response.body == "Dr. Meera \u2014 Great. Reply CONFIRM and I'll take the next step, or STOP to end here."
 
 
 def test_first_reply_on_a_judge_opened_customer_conversation_greets_as_the_business() -> None:
@@ -369,7 +369,7 @@ def test_cta_shapes_hold_for_every_intent(intent: str, cta: CtaType, voice: Voic
         assert body.count("?") == 1 and body.endswith("?"), body
         assert "CONFIRM" not in body
     elif cta is CtaType.BINARY_CONFIRM_CANCEL:
-        assert "?" not in body and "Reply CONFIRM" in body and "CANCEL" in body, body
+        assert "?" not in body and "Reply CONFIRM" in body and "or STOP to end here." in body, body
     else:
         assert "?" not in body and "CONFIRM" not in body, body
 
@@ -417,6 +417,6 @@ def test_bodies_never_repeat_within_a_conversation() -> None:
     bodies = [d.response.body for d in decisions]
 
     assert len(set(bodies)) == len(bodies) == 5
-    assert all(b.endswith("or CANCEL to stop.") for b in bodies)
+    assert all(b.endswith("or STOP to end here.") for b in bodies)
     vera = [t.body for t in state.conversation_store.get(action.conversation_id).turns if t.role is TurnRole.VERA]
     assert len(set(vera)) == len(vera)

@@ -265,8 +265,14 @@ def run(demo: Demo) -> None:
     demo.reply(dip, "Cancel", turn=4)
 
     scenario("SCENARIO 4 - CUSTOMER CONVERSATION",
-             "Priya answers the recall message from Scenario 2 with a question; the reply comes from the clinic, not Vera.")
+             "Priya answers the recall message from Scenario 2 with questions, then agrees; the replies come from the "
+             "clinic, not Vera.")
+    step("customer asks about availability")
     demo.reply(recall, "Do you have any evening slots?", turn=2)
+    step("customer asks about price")
+    demo.reply(recall, "How much is the cleaning?", turn=3)
+    step("customer agrees")
+    demo.reply(recall, "yes", turn=4)
 
     scenario("SCENARIO 5 - SUPPRESSION",
              "The same Diwali trigger is ticked twice. The first tick sends and commits its suppression key; "

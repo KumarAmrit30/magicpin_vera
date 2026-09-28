@@ -58,8 +58,9 @@ trigger and no prior Vera turn, a reply is fixed text plus an optional greeting.
 
 | Intent (2F)       | CTA (2F)                | Shape                                                                        |
 |-------------------|-------------------------|------------------------------------------------------------------------------|
-| affirmative       | `binary_confirm_cancel` | lead · `Reply CONFIRM and I'll/we'll <offer>, or CANCEL to stop.`            |
-| question          | `open_ended`            | lead · `What I/we have on record: <reason>` · `I/We can <offer>.` · one question |
+| affirmative       | `binary_confirm_cancel` | lead · `Reply CONFIRM and I'll/we'll <offer>, or STOP to end here.`          |
+| question (answerable) | `open_ended`        | lead · the requested facts (Phase 3C) · `I/We can <offer>.` · one question   |
+| question (general) | `open_ended`           | lead · `What I/we have on record: <next unshared fact or reason>` · `I/We can <offer>.` · one question |
 | question (why)    | `open_ended`            | `Here's why I raised it:` · `<reason>` · offer · one question                |
 | objection         | `open_ended`            | acknowledgement · `I raised it because of this: <reason>` · `No pressure either way.` · offer · one question |
 | off_topic         | `open_ended`            | polite decline · `Coming back to <topic>: I/we can <offer>.` · one question  |
@@ -78,15 +79,18 @@ the trigger.
 ## 5. CTA rules
 
 - `binary_yes_no` / `open_ended`: exactly one `?`, as the last sentence.
-- `binary_confirm_cancel`: `Reply CONFIRM … or CANCEL to stop.` with no question.
+- `binary_confirm_cancel`: `Reply CONFIRM … or STOP to end here.` with no
+  question. Both keywords are honoured by Phase 2F (CONFIRM → affirmative,
+  STOP → opt-out); see Phase 3C §6 for why CANCEL is no longer advertised.
 - `none`: no question and no CONFIRM.
 
 The CTA on the wire is always the Phase 2F CTA.
 
 ## 6. Templates
 
-`template_name` is `vera_reply_<key>_v1`, where `<key>` is the intent, or `why`
-for a why-question that has a recorded reason. `template_params` hold only the
+`template_name` is `vera_reply_<key>_v1`, where `<key>` is the intent, `why`
+for a why-question that has a recorded reason, or `answer` for a question with
+a recognised request (Phase 3C). `template_params` hold only the
 inserted values (reason, offer, topic, greeting names). `template` has `{{n}}`
 placeholders, and substituting the params gives the body back. Only the body
 goes on the wire.
@@ -114,8 +118,8 @@ same body, whatever the `received_at` time.
 ## 9. Limitations
 
 - English only.
-- A question is answered with the opener's first fact, not the fact most
-  relevant to the question (e.g. a price question gets the due date).
+- Question relevance is handled by Phase 3C
+  ([`phase-3c-fact-relevance.md`](phase-3c-fact-relevance.md)).
 - Topic phrases are fixed per trigger kind.
 - Interpretation of messages (e.g. "What time will you call me tomorrow?" as a
   deferral) belongs to Phase 2F and is not revisited here.
