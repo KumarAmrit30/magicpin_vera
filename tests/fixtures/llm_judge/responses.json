@@ -1,0 +1,35 @@
+{
+  "note": "Stored judge responses for deterministic tests of scripts/llm_judge.py; not real evaluations.",
+  "responses": {
+    "S03": {
+      "case_id": "S03",
+      "dimensions": {
+        "specificity": {"score": 8, "reason": "Uses the due date, last cleaning date, offer price and both open slots from the context."},
+        "category_fit": {"score": 7, "reason": "Plain clinic reminder; no medical claims."},
+        "merchant_fit": {"score": 6, "reason": "Names the clinic and customer; body is English although the customer prefers hi-en mix."},
+        "trigger_relevance": {"score": 8, "reason": "The recall due date is the anchor."},
+        "engagement_compulsion": {"score": 7, "reason": "Single CONFIRM reply for a named slot."}
+      },
+      "groundedness": {"score": 10, "unsupported_claims": [], "missing_context_used": ["weekday evening preference"]},
+      "rationale_alignment": {"score": 7, "issues": ["Rationale carries internal fields (priority, confidence, plan_id)."]},
+      "cta_assessment": {"score": 9, "issues": []},
+      "critical_issues": [],
+      "suggested_improvements": ["Use Hindi-English code-mix for the fact sentences."]
+    },
+    "S10": {
+      "case_id": "S10",
+      "dimensions": {
+        "specificity": {"score": 8, "reason": "Cites the match, the offer, 180 delivery orders and the source."},
+        "category_fit": {"score": 8, "reason": "Operator framing around delivery rather than dine-in."},
+        "merchant_fit": {"score": 7, "reason": "Uses the owner's name, active offer and order count."},
+        "trigger_relevance": {"score": 8, "reason": "Explains why the Saturday match matters."},
+        "engagement_compulsion": {"score": 7, "reason": "One yes/no question offering to draft."}
+      },
+      "groundedness": {"score": 9, "unsupported_claims": [], "missing_context_used": ["match start time"]},
+      "rationale_alignment": {"score": 8, "issues": []},
+      "cta_assessment": {"score": 9, "issues": []},
+      "critical_issues": [],
+      "suggested_improvements": []
+    }
+  }
+}

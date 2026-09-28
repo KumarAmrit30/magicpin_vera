@@ -87,6 +87,15 @@ CUSTOMER_TOPIC_WORDS = {
 CATEGORY_ONLY_WORDS = {"session": {"gyms"}}
 """Customer-facing words that belong to specific categories only."""
 
+HINDI_PREFS = ("hi", "hi-en mix")
+HINGLISH_MARKERS = frozenset({"aapka", "aapki", "aapke", "hai", "hain", "ko", "kal", "nahi", "thi", "hongi", "liye", "baar"})
+"""Words that only a Hindi-English code-mix body contains (challenge-brief §8 merchant fit: "Is the language preference honored?")."""
+
+RATIONALE_PURPOSE = re.compile(r":\s*(?P<purpose>.+?)\.?\s+priority=")
+GENERIC_RATIONALE_WORDS = frozenset({"customer", "customers", "merchant", "their", "which", "about", "before", "instead",
+                                      "already", "started", "should", "there", "where", "while"})
+"""Rationale words that name roles or grammar rather than the message's topic."""
+
 
 # --------------------------------------------------------------------------- #
 # Data
@@ -238,6 +247,11 @@ def diagnose(action: dict[str, Any], plan: DecisionPlan, ctx: CandidateGeneratio
     lowered = body.lower()
     digest_sources = [d.get("source") for d in ctx.category.get("digest") or [] if isinstance(d, dict) and d.get("source")]
     last = parts[-1] if parts else ""
+    voice = ctx.category.get("voice") or {}
+    words = set(re.findall(r"[a-z]+", lowered))
+    language_pref = ((ctx.customer or {}).get("identity") or {}).get("language_pref")
+    purpose = RATIONALE_PURPOSE.search(action["rationale"] or "")
+    purpose_words = {w.removesuffix("'s") for w in re.findall(r"[a-z']{5,}", purpose.group("purpose").lower())} if purpose else set()
 
     return {
         "chars": len(body),
@@ -258,9 +272,18 @@ def diagnose(action: dict[str, Any], plan: DecisionPlan, ctx: CandidateGeneratio
         "off_category_words": sorted(w for w, cats in CATEGORY_ONLY_WORDS.items()
                                      if customer and re.search(rf"\b{w}\b", lowered) and ctx.category.get("slug") not in cats),
         "names_person": bool(person) and person in body,
+        "business_named": bool(identity.get("name")) and identity["name"] in body,
         "cites_source": "Source:" in body or any(s in body for s in digest_sources),
+        "cta_count": body.count("?") + body.count("Reply CONFIRM"),
+        "category_vocab_used": sorted(t for t in voice.get("vocab_allowed") or [] if t.lower() in lowered),
+        "category_taboo_used": sorted(t for t in voice.get("vocab_taboo") or [] if t.lower() in lowered),
         "merchant_languages": identity.get("languages"),
-        "customer_language_pref": ((ctx.customer or {}).get("identity") or {}).get("language_pref"),
+        "customer_language_pref": language_pref,
+        "hinglish_markers": sorted(words & HINGLISH_MARKERS),
+        "language_match": (bool(words & HINGLISH_MARKERS) == (language_pref in HINDI_PREFS)) if customer else None,
+        "rationale_topic_missing": sorted(w for w in purpose_words - GENERIC_RATIONALE_WORDS
+                                          if not any(token.startswith(w[:5]) for token in words)),
+        "suppression_key_in_body": bool(action["suppression_key"]) and action["suppression_key"] in body,
         "leaks": sorted({name for name, pattern in LEAKS.items() if pattern.search(body)}),
         "wire_matches_composer": (body, action["template_name"], action["template_params"]) == (
             message.body, message.template_name, list(message.template_params)),
@@ -393,6 +416,12 @@ def print_summary(rows: list[dict[str, Any]]) -> None:
     moments = [m for m in metrics if m["names_trigger_moment"] is not None]
     print(f"customer bodies naming their trigger's moment: {sum(m['names_trigger_moment'] for m in moments)}/{len(moments)}; "
           f"with off-category words: {sum(bool(m['off_category_words']) for m in metrics)}")
+    print(f"CTA count per body: {dict(Counter(m['cta_count'] for m in metrics))}; business named: "
+          f"{sum(m['business_named'] for m in metrics)}/{len(sent)}; suppression key in body: "
+          f"{sum(m['suppression_key_in_body'] for m in metrics)}; category taboo used: {sum(bool(m['category_taboo_used']) for m in metrics)}")
+    languages = [m for m in metrics if m["language_match"] is not None]
+    print(f"customer bodies matching language preference: {sum(m['language_match'] for m in languages)}/{len(languages)}; "
+          f"bodies with rationale topic words missing: {sum(bool(m['rationale_topic_missing']) for m in metrics)}/{len(sent)}")
     print(f"with grounded evidence not rendered: {sum(bool(m['grounded_not_rendered']) for m in metrics)}/{len(sent)}")
     omitted = Counter(label.split(" (")[0] for m in metrics for label in m["grounded_not_rendered"])
     if omitted:
