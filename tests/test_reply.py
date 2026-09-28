@@ -323,8 +323,8 @@ def test_affirmative_switches_to_action_mode(state: StateContainer) -> None:
 
     assert decision.response.action is ReplyAction.SEND
     assert decision.response.cta is CtaType.BINARY_CONFIRM_CANCEL
-    assert decision.response.body.startswith(REPLY_PLACEHOLDER_PREFIX)
-    assert "trigger=trg_x" in decision.response.body
+    assert REPLY_PLACEHOLDER_PREFIX not in decision.response.body
+    assert "Reply CONFIRM" in decision.response.body and "trg_x" not in decision.response.body
     assert conversation(state).state is S.COMMITTED
     assert len(state.conversation_store) == 1
 
@@ -377,7 +377,8 @@ def test_engaged_replies_get_a_structured_send(
 
     assert decision.reading.intent is intent
     assert (decision.response.action, decision.response.cta) == (ReplyAction.SEND, cta)
-    assert decision.response.body.startswith(f"{REPLY_PLACEHOLDER_PREFIX} ")
+    assert REPLY_PLACEHOLDER_PREFIX not in decision.response.body
+    assert decision.response.body.endswith("?") and decision.response.body.count("?") == 1
     assert conversation(state).state is S.QUALIFYING
 
 
@@ -388,8 +389,8 @@ def test_off_topic_redirects_to_the_original_trigger_without_new_outreach(state:
 
     assert decision.reading.intent is R.OFF_TOPIC
     assert decision.response.cta is CtaType.OPEN_ENDED
-    assert "redirect to the original trigger" in decision.response.body
-    assert "trigger=trg_x" in decision.response.body
+    assert decision.response.body.startswith("That's outside my scope here.")
+    assert "trg_x" not in decision.response.body
     assert conversation(state).trigger_id == "trg_x"
     assert (len(state.conversation_store), len(state.suppression_store)) == (1, 0)
 

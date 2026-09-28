@@ -72,7 +72,7 @@ Implemented in `app/engine/reply.py`; `/v1/reply` delegates to it:
 - "let's do it" / "yes" moves the conversation to `committed` (action mode); questions and objections never send it back to qualifying
 - not interested and opt-out end the conversation; merchant hostility also writes `suppress:merchant:<id>` (no expiry; the package sets no duration), which later ticks respect
 - unknown conversation ids are created; a reply that conflicts with a conversation's merchant or customer is refused without being recorded
-- reply bodies are still deterministic `[uncomposed reply]` placeholders (reply composition is deferred to Phase 3B)
+- `send` bodies are worded by the Phase 3B reply composer; `wait`/`end` carry no body
 
 ## Phase 3 — Message Composer
 
@@ -84,13 +84,23 @@ Implemented in `app/engine/composer.py`; the tick planner calls it for every emi
 - `vera` messages address the owner with the category salutation (`Dr. Meera`, `Hi Suresh`); `merchant_on_behalf` messages speak as the business to the customer and use only customer-facing facts
 - `NO_ACTION` raises `CompositionError`; deterministic (no clock, randomness, LLM or I/O)
 
+## Phase 3B — Reply Composer
+
+Implemented in `app/engine/reply_composer.py`; `handle_reply` calls `realize` between the Phase 2F decision and storing the turn:
+
+- words only `send` responses; action, `cta`, `wait_seconds`, rationale, state transition and suppression are the Phase 2F decision, unchanged
+- grounded in the conversation itself: the topic comes from the trigger kind, the reason from the tick opener's first fact, and the offer from Vera's latest message; anything missing is left out
+- one CTA matching the decision (`Reply CONFIRM … or CANCEL to stop.` for affirmatives, one question for `binary_yes_no`/`open_ended`)
+- merchant replies speak as Vera ("I"); customer replies speak as the business ("we") and never mention Vera
+- deterministic (no clock, randomness or LLM); bodies never repeat within a conversation
+
 Not yet implemented:
 
-- composed `/v1/reply` bodies, Hindi-English code-mix wording (Phase 3B)
+- Hindi-English code-mix wording
 
 Design principle: *triggers are evidence, not instructions.* See the "Decision Domain — Phase 2A",
 "Candidate Generation — Phase 2B", "Eligibility & Suppression — Phase 2C" and "Candidate Scoring & Winner Selection — Phase 2D" sections of
-[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md), [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md), [`docs/phase-2f-reply.md`](docs/phase-2f-reply.md) and [`docs/phase-3-composer.md`](docs/phase-3-composer.md).
+[`docs/architecture.md`](docs/architecture.md), [`docs/phase-2c-eligibility.md`](docs/phase-2c-eligibility.md), [`docs/phase-2e-planner.md`](docs/phase-2e-planner.md), [`docs/phase-2f-reply.md`](docs/phase-2f-reply.md), [`docs/phase-3-composer.md`](docs/phase-3-composer.md) and [`docs/phase-3b-reply-composer.md`](docs/phase-3b-reply-composer.md).
 
 ## Architecture
 
@@ -152,7 +162,7 @@ pytest -q
 | GET    | `/v1/metadata` | Bot identity (team fields from env, `engine: "deterministic"`, `model: "none"`) |
 | POST   | `/v1/context`  | 200 created/replaced/duplicate, 409 stale version, 400 malformed |
 | POST   | `/v1/tick`     | Plans the available triggers; returns 0–20 actions with composed messages |
-| POST   | `/v1/reply`    | Records the turn and returns a `send` / `wait` / `end` decision (placeholder body until Phase 3B) |
+| POST   | `/v1/reply`    | Records the turn and returns a `send` / `wait` / `end` decision |
 
 Interactive schema: `http://localhost:8080/docs`. Example calls:
 

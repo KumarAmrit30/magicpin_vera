@@ -136,9 +136,9 @@ Only the realization layer changed in `app/engine/planner.py`:
 
 Plans, plan ids, suppression keys, conversation allocation and commits are identical to Phase 2E. This is verified over the 30 canonical pairs.
 
-## 9. Reply scope (deferred to Phase 3B)
+## 9. Reply scope
 
-`/v1/reply` bodies are not `DecisionPlan`-based, so Phase 3 leaves them as the Phase 2F placeholders: `[uncomposed reply] <instruction> | trigger=<id> turn=<n>`. Reply classification, actions, CTAs and state transitions are unchanged.
+`/v1/reply` bodies are not `DecisionPlan`-based, so this composer does not word them. Phase 3B does, in `app/engine/reply_composer.py`; see [`phase-3b-reply-composer.md`](phase-3b-reply-composer.md).
 
 ## 10. Known limitations
 

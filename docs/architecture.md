@@ -586,6 +586,23 @@ DecisionPlan + CandidateGenerationContext
 
 - Realization only: no selection, ranking, suppression or conversation-state change. `NO_ACTION` raises `CompositionError`.
 - `template` is the body with `{{n}}` in place of each positional parameter; substituting `template_params` gives the body back.
-- Reply bodies stay Phase 2F placeholders (Phase 3B).
+- Reply bodies are worded separately (Phase 3B, below).
 
 Details: [`phase-3-composer.md`](phase-3-composer.md).
+
+## Reply Composer — Phase 3B
+
+`app/engine/reply_composer.py`: `realize(decision, conversation, contexts)`. `handle_reply` calls it after `decide_reply` and before `_apply`, so the stored Vera turn and the wire body are the same text.
+
+```text
+ReplyDecision (Phase 2F, authoritative)
+  ─► send? no  ─► unchanged (wait / end have no body)
+  ─► send? yes ─► reply_context(conversation, contexts): voice, topic (trigger kind), reason (opener's first fact),
+                  offer (latest Vera offer), greeting (only before Vera's first turn), earlier bodies
+              ─► compose_reply(intent, cta, context) ─► body swapped in; every other field kept
+```
+
+- No `DecisionPlan`: replies have no candidate set, so the composer reads only the conversation and the contexts named by its ids.
+- Reuses `TemplateWriter`, `merchant_salutation` and `customer_greeting` from the Phase 3 composer.
+
+Details: [`phase-3b-reply-composer.md`](phase-3b-reply-composer.md).

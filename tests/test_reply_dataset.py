@@ -100,7 +100,7 @@ def test_intent_transition_replay(trigger_id: str) -> None:
     body = decision.response.body.lower()
     assert (decision.response.action, decision.response.cta) == (ReplyAction.SEND, CtaType.BINARY_CONFIRM_CANCEL)
     assert any(w in body for w in ACTIONING) and not any(w in body for w in QUALIFYING)
-    assert f"trigger={trigger_id}" in decision.response.body
+    assert "Reply CONFIRM" in decision.response.body and trigger_id not in decision.response.body
     conversation = state.conversation_store.get(action.conversation_id)
     assert conversation.state is S.COMMITTED
     assert conversation.turns[0].body == action.body
@@ -147,7 +147,7 @@ def test_off_topic_on_live_conversation_stays_on_trigger(trigger_id: str) -> Non
     decision = answer(state, action, "Can you also help me file my GST?")
 
     assert decision.response.cta is CtaType.OPEN_ENDED
-    assert f"trigger={trigger_id}" in decision.response.body
+    assert "Coming back to " in decision.response.body and trigger_id not in decision.response.body
     assert state.conversation_store.get(action.conversation_id).trigger_id == trigger_id
     assert len(state.conversation_store) == 1
 

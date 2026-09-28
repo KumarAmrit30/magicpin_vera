@@ -6,8 +6,10 @@
 message with fixed rules, moves the conversation's state, writes suppression
 when the contract requires it, and answers `send`, `wait` or `end`.
 
-The engine does not generate candidates, run a tick, or compose prose. Message
-bodies are structured placeholders until Phase 3.
+The engine does not generate candidates, run a tick, or compose prose.
+`decide_reply` still produces the structured placeholder body described below;
+since Phase 3B, `handle_reply` replaces it with composed wording before the turn
+is stored or returned ([`phase-3b-reply-composer.md`](phase-3b-reply-composer.md)).
 
 Code: `app/engine/reply.py`. `app/api/reply.py` is a thin wrapper around
 `handle_reply`. The only other production change is one read-only method,

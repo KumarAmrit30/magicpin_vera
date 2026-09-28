@@ -22,7 +22,9 @@ conversation it was given. Semantics follow the challenge package:
   in 4.3's rationale is illustrative, so the suppression has no expiry.
 * off-topic: decline politely and redirect to the original trigger (2.7, 4.3).
 
-Message bodies are structured placeholders; wording is Phase 3.
+``decide_reply`` puts a structured instruction in a ``send`` body; ``handle_reply``
+replaces it with the Phase 3B wording (``reply_composer.realize``) before the
+turn is stored or returned.
 """
 
 import logging
@@ -32,6 +34,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.engine.eligibility import merchant_suppression_key
+from app.engine.reply_composer import realize
 from app.models.enums import ConversationState, CtaType, FromRole, TurnRole
 from app.models.schemas import EndReply, ReplyRequest, SendReply, WaitReply
 from app.state.container import StateContainer
@@ -292,7 +295,7 @@ def handle_reply(state: StateContainer, request: ReplyRequest) -> ReplyDecision:
             turn_number=request.turn_number,
         )
         reading = read_reply([*prior, request.message])
-        decision = decide_reply(conversation, reading, request)
+        decision = realize(decide_reply(conversation, reading, request), conversation, state.context_store)
         _apply(state, conversation, decision, request)
 
     logger.info(

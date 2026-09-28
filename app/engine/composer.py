@@ -24,6 +24,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from app.engine.actions import ActionType, CTAType, DecisionScope
 from app.engine.archetypes import TriggerArchetype
@@ -240,7 +241,7 @@ def change_sentence(label: str, text: str) -> tuple[str, str] | None:
 
 
 @dataclass
-class _Writer:
+class TemplateWriter:
     body: list[str] = field(default_factory=list)
     template: list[str] = field(default_factory=list)
     params: list[str] = field(default_factory=list)
@@ -297,7 +298,7 @@ def compose(plan: DecisionPlan, context: CandidateGenerationContext) -> Composed
 
     facts = _grounded_facts(plan, context)
     taboos = [t.lower() for t in context.category.get("voice", {}).get("vocab_taboo") or [] if isinstance(t, str)]
-    writer = _Writer()
+    writer = TemplateWriter()
     if plan.scope is DecisionScope.CUSTOMER:
         _customer_message(writer, plan, context, facts, taboos)
     else:
@@ -337,7 +338,7 @@ REDUNDANT_WITH = {"subscription status": {"days since expiry", "days until renew
 
 
 def _merchant_message(
-    writer: _Writer, plan: DecisionPlan, context: CandidateGenerationContext, facts: list[_Fact], taboos: list[str]
+    writer: TemplateWriter, plan: DecisionPlan, context: CandidateGenerationContext, facts: list[_Fact], taboos: list[str]
 ) -> None:
     noun = CUSTOMER_NOUNS.get(context.category.get("slug"), "customers")
     labels = {f.label for f in facts}
@@ -385,9 +386,16 @@ def _merchant_message(
 
 
 def _salutation(context: CandidateGenerationContext) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    """The category's first salutation example that the merchant identity fills, e.g. ``Dr. {first_name}``."""
-    identity = context.merchant.get("identity") or {}
-    examples = (context.category.get("voice") or {}).get("salutation_examples") or []
+    return merchant_salutation(context.merchant, context.category)
+
+
+def merchant_salutation(merchant: Mapping[str, Any], category: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """The category's first salutation example that the merchant identity fills, e.g. ``Dr. {first_name}``.
+
+    Returns ``((pattern, *values), refs)``; ``None`` when no example can be filled.
+    """
+    identity = merchant.get("identity") or {}
+    examples = (category.get("voice") or {}).get("salutation_examples") or []
     for index, example in enumerate(examples):
         if not isinstance(example, str):
             continue
@@ -422,7 +430,7 @@ def _merchant_phrase(fact: _Fact, noun: str) -> tuple[str, tuple[str, ...]] | No
     return _sentence(pattern.replace("{noun}", noun)), (text,)
 
 
-def _citation(writer: _Writer, context: CandidateGenerationContext, taboos: list[str]) -> None:
+def _citation(writer: TemplateWriter, context: CandidateGenerationContext, taboos: list[str]) -> None:
     """Cite the digest item a rendered fact came from, when it names a source not already in the body."""
     for ref in list(writer.facts):
         match = re.fullmatch(r"category:digest\.(\d+)\.\w+", ref)
@@ -541,7 +549,7 @@ HINDI_PREFS = ("hi", "hi-en mix")
 
 
 def _customer_message(
-    writer: _Writer, plan: DecisionPlan, context: CandidateGenerationContext, facts: list[_Fact], taboos: list[str]
+    writer: TemplateWriter, plan: DecisionPlan, context: CandidateGenerationContext, facts: list[_Fact], taboos: list[str]
 ) -> None:
     usable = {}
     for fact in facts:
@@ -621,9 +629,15 @@ def _customer_message(
 
 
 def _customer_greeting(context: CandidateGenerationContext) -> tuple[str, tuple[str, ...], tuple[str, ...], str]:
+    return customer_greeting(context.customer, context.merchant)
+
+
+def customer_greeting(
+    customer: Mapping[str, Any] | None, merchant: Mapping[str, Any]
+) -> tuple[str, tuple[str, ...], tuple[str, ...], str]:
     """Greeting pattern, its values and refs, and the possessive for the person the message is about."""
-    identity = (context.customer or {}).get("identity") or {}
-    business = (context.merchant.get("identity") or {}).get("name")
+    identity = (customer or {}).get("identity") or {}
+    business = (merchant.get("identity") or {}).get("name")
     name = identity.get("name") if isinstance(identity.get("name"), str) else ""
     hello = "Namaste" if identity.get("language_pref") in HINDI_PREFS else "Hi"
     parent = re.fullmatch(r"\s*(.+?)\s*\(parent:\s*(.+?)\)\s*", name)
@@ -672,7 +686,10 @@ __all__ = [
     "WIRE_CTA",
     "ComposedMessage",
     "CompositionError",
+    "TemplateWriter",
     "compose",
+    "customer_greeting",
     "humanize",
+    "merchant_salutation",
     "reads_as",
 ]
