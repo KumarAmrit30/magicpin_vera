@@ -106,6 +106,15 @@ Implemented in `app/engine/reply_facts.py`, used by the reply composer:
 
 Details: [`docs/phase-3c-fact-relevance.md`](docs/phase-3c-fact-relevance.md).
 
+## Phase 3D — Evaluation and Targeted Optimization
+
+- `scripts/evaluate_vera.py` is a dev-only, read-only harness. It runs the 30 canonical pairs, the 25 seed triggers or the simulator's inputs through the real app and records mechanical metrics (no combined score). `--json` / `--compare` give an A/B
+- appointment and refill reminders name their moment and say what CONFIRM does; the winback question uses category wording; the lead budget never drops every one of the merchant's own figures
+- a count question is answered only by a count that covers it; otherwise the reply says the number is missing
+- decisions, plan ids, suppression keys and the official simulator results are unchanged
+
+Details: [`docs/phase-3d-evaluation.md`](docs/phase-3d-evaluation.md).
+
 Not yet implemented:
 
 - Hindi-English code-mix wording

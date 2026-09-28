@@ -98,8 +98,13 @@ REQUESTS: tuple[Request, ...] = (
 )
 """Checked against the lowercased question. Overlapping matches keep the earliest, then longest, then first declared."""
 
-RELATED: dict[str, tuple[FactKind, ...]] = {"appointment": (K.AVAILABILITY,)}
+RELATED: dict[str, tuple[FactKind, ...]] = {"appointment": (K.AVAILABILITY,), "count": (K.COUNT,)}
 """A grounded fallback worth offering when the requested fact is missing."""
+
+COHORT_MARKER = "matching"
+"""Phase 3A's word for the trigger's own cohort (``You have 124 matching patients on record.``)."""
+COHORT_WORDS = frozenset({"affected", "impacted", "relevant", "eligible"})
+"""Qualifiers a cohort count answers; any other word the question names must appear in the count itself."""
 
 PARTS_OF_DAY: dict[str, tuple[int, int]] = {"morning": (5, 12), "afternoon": (12, 17), "evening": (17, 23)}
 PART_PATTERN = re.compile(r"\b(morning|afternoon|evening|weekend)s?\b")
@@ -289,6 +294,13 @@ def _overlap(fact: Fact, question_words: frozenset[str]) -> int:
     return len(question_words & set(CONTENT_WORD.findall(fact.sentence.lower())))
 
 
+def _counts_what_was_asked(fact: Fact, question_words: frozenset[str]) -> bool:
+    """``240 chronic-Rx customers`` does not answer "how many customers are affected"; a matching cohort does."""
+    words = set(CONTENT_WORD.findall(fact.sentence.lower()))
+    uncovered = question_words - words
+    return not uncovered or (COHORT_MARKER in words and uncovered <= COHORT_WORDS)
+
+
 def _in_part(start: datetime | None, part: str) -> bool:
     if start is None:
         return False
@@ -306,11 +318,12 @@ def select(message: str, pool: Sequence[Fact], vera_turns: Sequence[str]) -> Ans
     latest = vera_turns[-1] if vera_turns else ""
     earlier = " ".join(vera_turns)
 
-    def best(kinds: tuple[FactKind, ...], taken: Sequence[Fact]) -> Fact | None:
+    def best(kinds: tuple[FactKind, ...], taken: Sequence[Fact], direct: bool = True) -> Fact | None:
         candidates = [
             (index, f) for index, f in enumerate(pool)
             if f.kind in kinds and f not in taken
             and not (f.kind in ITEM_KINDS and question_words and not _overlap(f, question_words))
+            and not (direct and f.kind is K.COUNT and not _counts_what_was_asked(f, question_words))
         ]
         if not candidates:
             return None
@@ -331,7 +344,7 @@ def select(message: str, pool: Sequence[Fact], vera_turns: Sequence[str]) -> Ans
             chosen.append(found)
         elif not any(f.kind in request.kinds for f in chosen):
             missing.append(request)
-            if request.name in RELATED and (related := best(RELATED[request.name], [*chosen, *fallbacks])):
+            if request.name in RELATED and (related := best(RELATED[request.name], [*chosen, *fallbacks], direct=False)):
                 fallbacks.append(related)
 
     part = next(iter(PART_PATTERN.findall(message.lower())), None)

@@ -80,6 +80,13 @@ A price fact that shares no word with a named item ("How much is the bridal
 package?" when only a haircut offer exists) is not used. A direct match always
 wins over the opener's first fact; the first fact is never a fallback.
 
+A count answers a count question directly only if it covers the question's
+words ("How many chronic-Rx customers…" → `240 chronic-Rx customers`), or if
+it is a `matching` cohort and the question asks about affected, impacted,
+relevant or eligible people. Otherwise the reply says the number is missing
+and offers the count as related: `I don't have that number on record. You
+have 240 chronic-Rx customers on record.` (Phase 3D).
+
 A part of day in the question filters the slot labels by the slot's ISO start
 time (morning 5–12, afternoon 12–17, evening 17–23, weekend Sat/Sun).
 

@@ -70,6 +70,9 @@ Missing values are omitted, and the message falls back to a less specific senten
 - it duplicates an earlier sentence.
 
 The lead is capped at 4 facts / ~320 characters. The first fact is always kept.
+If the cap would drop every grounded merchant figure (the merchant's own counts
+and metrics), the first figure it dropped is rendered anyway (`You've had 180
+delivery orders in the last 30 days.`).
 
 ## 4. Structure and voice
 
@@ -92,6 +95,17 @@ The lead is capped at 4 facts / ~320 characters. The first fact is always kept.
   - Placeholder names like `(walk-in, no profile)` get no name.
 - Only customer-facing facts are allowed: due dates, services, the last visit or refill, medicines, trial and wedding dates, the next step, the active offer and open slots.
 - There is no Vera persona and no merchant-internal metric.
+- Reminders name their moment:
+  - An `appointment_tomorrow` reminder gives the booked time when the plan has
+    one (`Your cleaning appointment is on 27 Apr 2026, 6pm.`), otherwise
+    `This is a reminder about your appointment tomorrow.`
+  - A refill without medicine names says `Your refill is due.`
+  - The CTA says what CONFIRM does: `Reply CONFIRM to keep your appointment.` /
+    `Reply CONFIRM to arrange your refill.`
+- The winback question is worded for the category:
+  - gyms: `Want to book a session?`
+  - pharmacies: `Want us to help with your next order?`
+  - everyone else: `Want to book your next visit?`
 
 **Category vocabulary:** customers are `patients` for dentists, `members` for gyms, `clients` for salons, and `customers` otherwise.
 

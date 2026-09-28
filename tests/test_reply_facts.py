@@ -160,8 +160,14 @@ def test_count_question_gets_the_count() -> None:
 
 def test_count_question_without_a_count_is_not_answered_with_a_guess() -> None:
     answer = body(SUPPLY, "How many customers are affected?")
-    assert answer.startswith("I don't have that number on record. I can draft the note to affected customers")
-    assert not numbers(answer)
+    assert answer.startswith("I don't have that number on record. You have 240 chronic-Rx customers on record.")
+    assert numbers(answer) == {"240"}
+
+
+def test_a_count_answers_only_what_it_counts() -> None:
+    assert body(SUPPLY, "How many chronic-Rx customers do I have?").startswith("You have 240 chronic-Rx customers on record.")
+    assert body(DIGEST, "How many patients visited last month?").startswith(
+        "I don't have that number on record. You have 124 matching patients on record.")
 
 
 def test_source_and_event_questions() -> None:

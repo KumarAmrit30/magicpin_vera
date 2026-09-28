@@ -353,6 +353,7 @@ def _merchant_message(
         writer.add(pattern, *values, facts=refs)
 
     rendered = 0
+    over_budget: list[tuple[_Fact, str, tuple[str, ...]]] = []
     for fact in facts:
         if labels & REDUNDANT_WITH.get(fact.label, set()):
             continue
@@ -365,12 +366,16 @@ def _merchant_message(
         body, _ = writer.render(pattern, values)
         if not _allowed(body, taboos) or any(body in b for b in writer.body):
             continue
-        if rendered and len(writer.text) + len(body) > LEAD_BUDGET_CHARS:
+        if rendered == MAX_LEAD_FACTS or (rendered and len(writer.text) + len(body) > LEAD_BUDGET_CHARS):
+            over_budget.append((fact, pattern, values))
             continue
         add(pattern, values, (fact.ref,))
         rendered += 1
-        if rendered == MAX_LEAD_FACTS:
-            break
+
+    own_number = next((item for item in over_budget if _is_merchant_number(item[0])), None)
+    if own_number is not None and not any(_is_merchant_number(f) for f in facts if f.ref in writer.facts):
+        fact, pattern, values = own_number
+        add(pattern, values, (fact.ref,))
 
     _citation(writer, context, taboos)
     proposal = _proposal(plan, facts, noun)
@@ -383,6 +388,12 @@ def _merchant_message(
         add(*cta)
     if not writer.body:
         add("A quick update for you.", (), ())
+
+
+def _is_merchant_number(fact: _Fact) -> bool:
+    """One of the merchant's own figures (their counts and metrics), which the lead budget never crowds out entirely."""
+    value = fact.evidence.value
+    return fact.evidence.source is EvidenceSource.MERCHANT and isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def _salutation(context: CandidateGenerationContext) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
@@ -542,8 +553,12 @@ CUSTOMER_LABELS = frozenset({
     "due date", "service due", "last service", "last visit", "days since last visit", "previous focus",
     "months as a member", "trial date", "trial completed", "next step", "wedding date", "days to wedding",
     "medicines", "stock runs out", "delivery address saved", "last refill", "active offer", "available options",
+    "appointment", "service",
 })
 """The only facts a customer-facing message may use; everything else is merchant-internal."""
+
+WINBACK_QUESTIONS = {"gyms": "Want to book a session?", "pharmacies": "Want us to help with your next order?"}
+"""Category wording for the winback question; other categories book a visit."""
 
 HINDI_PREFS = ("hi", "hi-en mix")
 
@@ -563,8 +578,20 @@ def _customer_message(
     writer.add(greeting, *greeting_values, facts=greeting_refs)
     has = usable.__contains__
     first_option = _first_option(usable.get("available options"))
+    reminder = plan.action is A.SEND_CUSTOMER_REMINDER
+    appointment = reminder and context.canonical_kind == "appointment_tomorrow"
+    refill = reminder and (has("medicines") or context.canonical_kind == "chronic_refill_due")
 
-    if plan.action is A.SEND_CUSTOMER_REMINDER:
+    if appointment:
+        if has("appointment"):
+            add(f"{possessive} {{}} appointment is on {{}}." if has("service") else f"{possessive} appointment is on {{}}.",
+                *(("service", "appointment") if has("service") else ("appointment",)))
+        else:
+            whose = "your" if possessive == "Your" else possessive
+            writer.add(f"This is a reminder about {whose} appointment tomorrow.", facts=("trigger:kind",))
+    elif refill and not has("medicines"):
+        writer.add(f"{possessive} refill is due.", facts=("trigger:kind",))
+    elif reminder:
         if has("service due"):
             add(f"{possessive} {{}} is due on {{}}." if has("due date") else f"{possessive} {{}} is due.",
                 *(("service due", "due date") if has("due date") else ("service due",)))
@@ -598,7 +625,7 @@ def _customer_message(
         if has("next step"):
             add("Next step: {}.", "next step")
 
-    if len(writer.body) == 1 and has("last visit"):
+    if has("last visit") and all(ref in greeting_refs or ref == "trigger:kind" for ref in writer.facts):
         add("Your last visit with us was on {}.", "last visit")
     if has("active offer"):
         add("Current offer: {}.", "active offer")
@@ -607,10 +634,11 @@ def _customer_message(
     if has("delivery address saved") and usable["delivery address saved"].text == "yes":
         writer.add("Your delivery address is saved with us.", facts=(usable["delivery address saved"].ref,))
 
-    refill = plan.action is A.SEND_CUSTOMER_REMINDER and has("medicines")
     if plan.cta_type is CTAType.CONFIRMATION:
         if refill:
             writer.add("Reply CONFIRM to arrange your refill.")
+        elif appointment:
+            writer.add("Reply CONFIRM to keep your appointment.")
         elif first_option:
             writer.add("Reply CONFIRM to book {}.", first_option, facts=(usable["available options"].ref,))
         else:
@@ -621,7 +649,7 @@ def _customer_message(
         elif first_option:
             writer.add("Shall we book {} for you?", first_option, facts=(usable["available options"].ref,))
         elif plan.action is A.SEND_CUSTOMER_WINBACK:
-            writer.add("Want to book a session?")
+            writer.add(WINBACK_QUESTIONS.get(context.category.get("slug"), "Want to book your next visit?"))
         else:
             writer.add("Want us to book your next visit?")
     elif plan.cta_type is CTAType.OPEN_ENDED:

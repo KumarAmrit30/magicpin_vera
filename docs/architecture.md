@@ -587,6 +587,7 @@ DecisionPlan + CandidateGenerationContext
 - Realization only: no selection, ranking, suppression or conversation-state change. `NO_ACTION` raises `CompositionError`.
 - `template` is the body with `{{n}}` in place of each positional parameter; substituting `template_params` gives the body back.
 - Reply bodies are worded separately (Phase 3B, below).
+- Phase 3D wording rules: customer reminders name their moment (appointment, refill); the winback question uses category wording; one of the merchant's own grounded figures always survives the lead budget. The evaluation is in [`phase-3d-evaluation.md`](phase-3d-evaluation.md).
 
 Details: [`phase-3-composer.md`](phase-3-composer.md).
 
