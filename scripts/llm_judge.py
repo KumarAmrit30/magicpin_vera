@@ -14,6 +14,7 @@ Never imported by the application. It runs only when invoked explicitly::
     .venv/bin/python scripts/llm_judge.py judge --cases reports/phase-3d/inputs/cases.json \
         --outputs reports/phase-3d/before/outputs.json --provider gemini --model gemini-3.5-flash \
         --output reports/phase-3d/before/judgements.json [--only T28]
+    #    (or --provider groq --model openai/gpt-oss-120b: same prompt, schema and validation; transport only)
 
     # 4. human-readable report / before-after comparison (no network)
     .venv/bin/python scripts/llm_judge.py report --outputs … --judgements … --output report.md
@@ -365,8 +366,15 @@ def validate_judgement(raw: str, case_id: str) -> dict[str, Any]:
 
 
 class Provider:
+    """Transport only: the same system prompt and case prompt in, the model's raw text out.
+
+    Prompt, schema validation, retries and artifacts belong to :func:`judge_cases`, identical for every provider.
+    """
+
     name = "provider"
     model = ""
+    pause = 0.0
+    """Seconds to wait between cases (live providers only)."""
 
     def complete(self, system: str, prompt: str, case_id: str) -> str:
         raise NotImplementedError
@@ -376,6 +384,7 @@ class GeminiProvider(Provider):
     """Google Generative Language ``generateContent``; the key travels only in the ``x-goog-api-key`` header."""
 
     name = "gemini"
+    pause = 1.0
 
     def __init__(self, api_key: str, model: str, temperature: float = 0.0, timeout: float = 180.0,
                  opener: Callable[..., Any] = urlrequest.urlopen) -> None:
@@ -423,6 +432,70 @@ class GeminiProvider(Provider):
         return text
 
 
+class GroqProvider(Provider):
+    """Groq's OpenAI-compatible Chat Completions; the key travels only in the ``Authorization: Bearer`` header.
+
+    JSON mode (``response_format: json_object``) is the counterpart of Gemini's ``responseMimeType``; the
+    schema itself is enforced by :func:`validate_judgement` exactly as for Gemini. Reasoning models return their
+    reasoning in a separate ``message.reasoning`` field, which is ignored like Gemini's thought parts.
+    """
+
+    name = "groq"
+    pause = 1.0
+    URL = "https://api.groq.com/openai/v1/chat/completions"
+    MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+    """Groq ids are namespaced (``openai/gpt-oss-120b``); the id travels in the body, never the URL."""
+
+    def __init__(self, api_key: str, model: str, temperature: float = 0.0, timeout: float = 180.0,
+                 opener: Callable[..., Any] = urlrequest.urlopen) -> None:
+        if not self.MODEL.fullmatch(model):
+            raise JudgeConfigError(f"invalid model name {model!r}")
+        self._key = api_key
+        self.model = model
+        self.temperature = temperature
+        self.timeout = timeout
+        self._open = opener
+
+    def _redact(self, text: str) -> str:
+        return text.replace(self._key, "[REDACTED]") if self._key else text
+
+    def complete(self, system: str, prompt: str, case_id: str) -> str:
+        body = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+            "response_format": {"type": "json_object"},
+        }).encode()
+        req = urlrequest.Request(self.URL, data=body, method="POST", headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {self._key}", "User-Agent": "vera-llm-judge/1",
+        })
+        try:
+            with self._open(req, timeout=self.timeout) as response:
+                payload = json.loads(response.read().decode())
+        except urlerror.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            try:
+                error = json.loads(detail).get("error", {})
+            except (json.JSONDecodeError, AttributeError):
+                error = {}
+            if exc.code == 400 and error.get("code") == "json_validate_failed":
+                # The model answered but not with valid JSON: hand its text to the schema checks (and their retry).
+                return self._redact(str(error.get("failed_generation") or ""))
+            raise ProviderError(self._redact(f"HTTP {exc.code}: {error.get('message', detail)}")) from None
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise ProviderError(self._redact(f"request failed: {exc}")) from None
+        except json.JSONDecodeError as exc:
+            raise ProviderError(f"provider returned a non-JSON envelope: {exc}") from None
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ProviderError(self._redact(f"no choices returned (error={payload.get('error')})"))
+        text = (choices[0].get("message") or {}).get("content") or ""
+        if not text:
+            raise ProviderError(f"empty response (finish_reason={choices[0].get('finish_reason')})")
+        return text
+
+
 class FixtureProvider(Provider):
     """Stored judge responses by case id, for deterministic tests; a missing case is an error, never a default."""
 
@@ -443,7 +516,8 @@ def create_provider(name: str | None, model: str | None, env: dict[str, str], fi
                     temperature: float = 0.0) -> Provider:
     """The requested provider only; there is no fallback to another provider or to stored scores."""
     name = name or env.get("VERA_EVAL_PROVIDER")
-    if name == "gemini":
+    live = {"gemini": GeminiProvider, "groq": GroqProvider}
+    if name in live:
         key = env.get("VERA_EVAL_API_KEY", "")
         if not key.strip():
             raise JudgeConfigError("VERA_EVAL_API_KEY is not set in this shell; export it before running the live judge "
@@ -451,12 +525,12 @@ def create_provider(name: str | None, model: str | None, env: dict[str, str], fi
         model = model or env.get("VERA_EVAL_MODEL")
         if not model:
             raise JudgeConfigError("no model given: pass --model or set VERA_EVAL_MODEL")
-        return GeminiProvider(key.strip(), model, temperature=temperature)
+        return live[name](key.strip(), model, temperature=temperature)
     if name == "fixture":
         if fixtures is None:
             raise JudgeConfigError("--fixtures is required for the fixture provider")
         return FixtureProvider(fixtures)
-    raise JudgeConfigError(f"unknown provider {name!r}; available: gemini, fixture")
+    raise JudgeConfigError(f"unknown provider {name!r}; available: gemini, groq, fixture")
 
 
 # --------------------------------------------------------------------------- #
@@ -508,8 +582,8 @@ def judge_cases(frozen: dict[str, Any], outputs: dict[str, Any], provider: Provi
             results.append(base | {"status": "judge_error", "errors": attempts})
         if aborted:
             break
-        if isinstance(provider, GeminiProvider):
-            time.sleep(1.0)
+        if provider.pause:
+            time.sleep(provider.pause)
     meta = {
         "rubric_version": RUBRIC_VERSION, "provider": provider.name, "model": provider.model,
         "temperature": getattr(provider, "temperature", None), "system_prompt_sha256": sha256_text(SYSTEM_PROMPT),
@@ -756,7 +830,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cases", type=Path, required=True)
     p.add_argument("--outputs", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--provider", choices=("gemini", "fixture"))
+    p.add_argument("--provider", choices=("gemini", "groq", "fixture"))
     p.add_argument("--model")
     p.add_argument("--fixtures", type=Path)
     p.add_argument("--only", nargs="+", help="case ids to judge (e.g. T28 for the smoke test)")

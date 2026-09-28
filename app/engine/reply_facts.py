@@ -120,19 +120,24 @@ ITEM_KINDS = frozenset({FactKind.PRICE})
 
 SENTENCE_KINDS: tuple[tuple[FactKind, re.Pattern[str]], ...] = (
     (K.PRICE, re.compile(rf"{PRICE_POINT.pattern}|^(?:Fee|Renewal amount):")),
-    (K.AVAILABILITY, re.compile(r"^(?:Open slots|Upcoming session):")),
-    (K.APPOINTMENT, re.compile(r"\bappointment is\b")),
-    (K.DUE_DATE, re.compile(r"\bdue on\b|\brun out on\b|\bdue for (?:renewal|a refill)\b")),
+    (K.AVAILABILITY, re.compile(r"^(?:Open slots|Upcoming session):|\bslots ready hain:")),
+    (K.APPOINTMENT, re.compile(r"\bappointment is\b|\bappointment .+ ko hai\b")),
+    (K.DUE_DATE, re.compile(
+        r"\bdue on\b|\brun out on\b|\bdue for (?:renewal|a refill)\b|\bko due hai\b|\bko khatam hongi\b|\) ki refill due hai\b"
+    )),
     (K.DEADLINE, re.compile(r"^Deadline:|\beffective\b")),
-    (K.EVENT_DATE, re.compile(r"^(?:Date|Start time|Opened):|\bis coming up\b|\bwedding (?:is )?on\b|\btrial on\b")),
-    (K.LAST_VISIT, re.compile(r"\blast (?:one|visit)\b|^Last refill:")),
+    (K.EVENT_DATE, re.compile(
+        r"^(?:Date|Start time|Opened):|\bis coming up\b|\bwedding (?:is )?on\b|\btrial on\b|\bwedding .+ ko hai\b|\btrial .+ ko tha\b"
+    )),
+    (K.LAST_VISIT, re.compile(r"\blast (?:one|visit)\b|^Last refill:|^Last (?:service|refill) .+ ko hui thi\b")),
     (K.COUNT, re.compile(
         r"\b\d[\d,]*\s+(?:[\w-]+\s+){0,2}(?:patients|customers|members|clients|orders|calls|views|reviews|times|batches)\b"
     )),
     (K.CHANGE, re.compile(r"\b(?:up|down) \d+(?:\.\d+)?%|\bunchanged\b")),
     (K.SOURCE, re.compile(r"^(?:Source|Issued by|Organiser):")),
 )
-"""How Phase 3A sentences state each kind of fact (see ``composer.MERCHANT_PHRASES`` and the customer message)."""
+"""How Phase 3A sentences state each kind of fact (see ``composer.MERCHANT_PHRASES`` and ``composer.CUSTOMER_PHRASES``,
+both languages)."""
 
 NOT_FACTS = ("Reply", "I can", "We can", "Want", "Shall", "Should", "What", "A quick update")
 UNUSABLE = re.compile(r"[\[\]{}?]")

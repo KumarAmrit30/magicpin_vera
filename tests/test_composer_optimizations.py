@@ -115,7 +115,7 @@ def test_appointment_reminder_with_a_booked_time_states_it() -> None:
     message = compose(plan, ctx)
 
     assert plan.action is A.SEND_CUSTOMER_REMINDER
-    assert "Your cleaning appointment is on 27 Apr 2026, 6pm." in message.body
+    assert "Aapka cleaning appointment 27 Apr 2026, 6pm ko hai." in message.body  # Priya prefers hi-en mix
     assert last_sentence(message.body) == "Reply CONFIRM to keep your appointment."
     assert {"trigger:payload.appointment_iso", "trigger:payload.service"} <= set(message.facts_used)
     assert "last visit with us" not in message.body

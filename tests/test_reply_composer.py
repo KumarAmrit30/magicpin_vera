@@ -267,8 +267,8 @@ def test_offer_and_dates_are_quoted_from_the_opening_message() -> None:
     state, action, decisions = converse(RECALL, [REPRESENTATIVE["objection"], "hmm ok?"])
     objection = decisions[0].response.body
 
-    assert "Your 6 month cleaning is due on 12 Nov 2026." in action.body
-    assert "We reached out because of this: Your 6 month cleaning is due on 12 Nov 2026." in objection
+    assert "Aapke liye 6 month cleaning 12 Nov 2026 ko due hai." in action.body
+    assert "We reached out because of this: Aapke liye 6 month cleaning 12 Nov 2026 ko due hai." in objection
     assert "We can book Wed 5 Nov, 6pm." in objection
 
 

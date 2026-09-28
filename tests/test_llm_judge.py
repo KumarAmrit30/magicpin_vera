@@ -234,6 +234,203 @@ def test_gemini_errors_are_redacted() -> None:
     assert str(info.value) == "HTTP 403: API key [REDACTED] not valid"
 
 
+def test_gemini_request_body_is_unchanged() -> None:
+    seen: list[Any] = []
+    lj.GeminiProvider(SECRET, "gemini-3.5-flash-lite", opener=gemini_opener([{"text": "{}"}], seen)).complete("SYSTEM", "PROMPT", "S03")
+    assert json.loads(seen[0].data) == {
+        "systemInstruction": {"parts": [{"text": "SYSTEM"}]},
+        "contents": [{"role": "user", "parts": [{"text": "PROMPT"}]}],
+        "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
+    }
+    assert seen[0].get_header("Authorization") is None and lj.GeminiProvider.pause == 1.0
+
+
+def groq_opener(content: str | None, seen: list[Any], **message: Any) -> Any:
+    def opener(request: Any, timeout: float) -> FakeResponse:
+        seen.append(request)
+        choice = {"index": 0, "message": {"role": "assistant", "content": content, **message}, "finish_reason": "stop"}
+        return FakeResponse(json.dumps({"id": "x", "model": "openai/gpt-oss-120b", "choices": [choice]}).encode())
+    return opener
+
+
+def groq_http_error(code: int, error: dict[str, Any]) -> Any:
+    def failing(request: Any, timeout: float) -> Any:
+        raise urlerror.HTTPError(request.full_url, code, "error", {}, io.BytesIO(json.dumps({"error": error}).encode()))
+    return failing
+
+
+def test_groq_request_uses_the_chat_completions_endpoint_and_bearer_key() -> None:
+    seen: list[Any] = []
+    provider = lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=groq_opener('{"a": 1}', seen, reasoning="thinking..."))
+
+    assert provider.complete("SYSTEM", "PROMPT", "S03") == '{"a": 1}'
+
+    request = seen[0]
+    assert request.full_url == "https://api.groq.com/openai/v1/chat/completions"
+    assert request.get_method() == "POST"
+    assert request.get_header("Authorization") == f"Bearer {SECRET}"
+    assert request.get_header("Content-type") == "application/json"
+    assert SECRET not in request.full_url and SECRET not in request.data.decode()
+    assert json.loads(request.data) == {
+        "model": "openai/gpt-oss-120b",
+        "messages": [{"role": "system", "content": "SYSTEM"}, {"role": "user", "content": "PROMPT"}],
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def test_groq_sends_exactly_the_prompt_gemini_sends(frozen: dict[str, Any], outputs: dict[str, Any],
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lj.time, "sleep", lambda _: None)
+    gemini_seen: list[Any] = []
+    groq_seen: list[Any] = []
+    lj.judge_cases(frozen, outputs, lj.GeminiProvider(SECRET, "g", opener=gemini_opener([{"text": "{}"}], gemini_seen)),
+                   only=["S03"], retries=0, log=lambda _: None)
+    lj.judge_cases(frozen, outputs, lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=groq_opener("{}", groq_seen)),
+                   only=["S03"], retries=0, log=lambda _: None)
+
+    gemini, groq = json.loads(gemini_seen[0].data), json.loads(groq_seen[0].data)
+    row = next(r for r in outputs["rows"] if r["case_id"] == "S03")
+    expected_prompt = lj.judge_prompt(lj.build_judge_input(frozen["cases"][0], row))
+    assert groq["messages"] == [{"role": "system", "content": lj.SYSTEM_PROMPT}, {"role": "user", "content": expected_prompt}]
+    assert gemini["systemInstruction"]["parts"][0]["text"] == groq["messages"][0]["content"]
+    assert gemini["contents"][0]["parts"][0]["text"] == groq["messages"][1]["content"]
+    assert gemini["generationConfig"]["temperature"] == groq["temperature"]
+
+
+def test_groq_judge_run_uses_the_same_schema_validation_and_retry(frozen: dict[str, Any], outputs: dict[str, Any],
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lj.time, "sleep", lambda _: None)
+    broken = fixture_judgement("S03")
+    broken["rationale_alignment"] = {"score": 9, "reason": "extra key"}
+    served = iter([json.dumps(broken), json.dumps(fixture_judgement("S03")), "not json", json.dumps({"case_id": "S10"})])
+
+    def opener(request: Any, timeout: float) -> FakeResponse:
+        return groq_opener(next(served), [])(request, timeout)
+
+    lines: list[str] = []
+    judged = lj.judge_cases(frozen, outputs, lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=opener), log=lines.append)
+
+    s03, s10 = judged["results"]
+    assert (s03["status"], s03["attempts"], s03["judgement"]) == ("ok", 2, fixture_judgement("S03"))
+    assert s10["status"] == "judge_error" and s10["errors"][0].startswith("valid JSON")
+    assert s10["errors"][1].startswith("strict top-level schema")
+    assert "[FAIL] S03 rationale_alignment object" in "\n".join(lines)
+    assert judged["meta"] | {"started_at": None, "finished_at": None, "git": None} == {
+        "rubric_version": lj.RUBRIC_VERSION, "provider": "groq", "model": "openai/gpt-oss-120b", "temperature": 0.0,
+        "system_prompt_sha256": lj.sha256_text(lj.SYSTEM_PROMPT), "started_at": None, "finished_at": None, "git": None,
+        "only": None, "aborted": None,
+    }
+
+
+def test_groq_json_validation_failure_goes_through_the_schema_retry() -> None:
+    provider = lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=groq_http_error(
+        400, {"message": "Failed to generate JSON.", "type": "invalid_request_error", "code": "json_validate_failed",
+              "failed_generation": '{"case_id": "S03", "dimensions": '}))
+    raw = provider.complete("s", "p", "S03")
+    assert raw == '{"case_id": "S03", "dimensions": '
+    assert lj.schema_checks(raw, "S03")[0][:2] == ("valid JSON", False)
+
+
+@pytest.mark.parametrize(("opener", "message"), [
+    (groq_http_error(401, {"message": f"Invalid API Key {SECRET}", "code": "invalid_api_key"}), "HTTP 401: Invalid API Key [REDACTED]"),
+    (groq_http_error(429, {"message": "Rate limit reached", "code": "rate_limit_exceeded"}), "HTTP 429: Rate limit reached"),
+    (groq_http_error(503, {"message": "Service unavailable"}), "HTTP 503: Service unavailable"),
+    (groq_http_error(400, {"message": "bad", "code": "json_validate_failed"}), None),
+])
+def test_groq_http_errors_are_surfaced_like_gemini(opener: Any, message: str | None) -> None:
+    provider = lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=opener)
+    if message is None:
+        assert provider.complete("s", "p", "S03") == ""
+        return
+    with pytest.raises(lj.ProviderError) as info:
+        provider.complete("s", "p", "S03")
+    assert str(info.value) == message
+
+
+def test_groq_transport_failures_and_empty_answers_are_provider_errors() -> None:
+    def refused(request: Any, timeout: float) -> Any:
+        raise urlerror.URLError("connection refused")
+
+    def not_json(request: Any, timeout: float) -> FakeResponse:
+        return FakeResponse(b"<html>")
+
+    def no_choices(request: Any, timeout: float) -> FakeResponse:
+        return FakeResponse(b'{"choices": []}')
+
+    for opener, message in ((refused, "request failed"), (not_json, "non-JSON envelope"), (no_choices, "no choices returned"),
+                            (groq_opener("", []), "empty response"), (groq_opener(None, []), "empty response")):
+        with pytest.raises(lj.ProviderError, match=message):
+            lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=opener).complete("s", "p", "S03")
+
+
+def test_groq_provider_failure_stops_the_run_like_gemini(frozen: dict[str, Any], outputs: dict[str, Any]) -> None:
+    provider = lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=groq_http_error(503, {"message": "over capacity"}))
+    judged = lj.judge_cases(frozen, outputs, provider, log=lambda _: None)
+
+    assert [(r["case_id"], r["status"], r["error"]) for r in judged["results"]] == [("S03", "provider_error", "HTTP 503: over capacity")]
+    assert judged["meta"]["aborted"] == "S03: HTTP 503: over capacity"
+
+
+def test_groq_selection_is_explicit_and_deterministic() -> None:
+    env = {"VERA_EVAL_API_KEY": f" {SECRET} "}
+    for provider in (lj.create_provider("groq", "openai/gpt-oss-120b", env),
+                     lj.create_provider(None, None, env | {"VERA_EVAL_PROVIDER": "groq", "VERA_EVAL_MODEL": "openai/gpt-oss-120b"}),
+                     lj.create_provider("groq", "openai/gpt-oss-120b", env | {"VERA_EVAL_PROVIDER": "gemini"})):
+        assert type(provider) is lj.GroqProvider
+        assert (provider.name, provider.model, provider.temperature, provider._key) == ("groq", "openai/gpt-oss-120b", 0.0, SECRET)
+    assert type(lj.create_provider("gemini", "gemini-3.5-flash-lite", env | {"VERA_EVAL_PROVIDER": "groq"})) is lj.GeminiProvider
+    with pytest.raises(lj.JudgeConfigError, match="invalid model name"):
+        lj.create_provider("groq", "openai/gpt oss?", env)
+    with pytest.raises(lj.JudgeConfigError, match="no model given"):
+        lj.create_provider("groq", None, env)
+    with pytest.raises(lj.JudgeConfigError, match="available: gemini, groq, fixture"):
+        lj.create_provider("openai", "x", env)
+
+
+def test_missing_groq_key_fails_cleanly_and_never_falls_back() -> None:
+    for env in ({}, {"VERA_EVAL_API_KEY": "  "}, {"VERA_EVAL_PROVIDER": "groq", "GROQ_API_KEY": SECRET}):
+        with pytest.raises(lj.JudgeConfigError, match="VERA_EVAL_API_KEY is not set"):
+            lj.create_provider(None if "VERA_EVAL_PROVIDER" in env else "groq", "openai/gpt-oss-120b", env)
+
+
+def test_cli_groq_judge_without_key_exits_clearly(frozen: dict[str, Any], outputs: dict[str, Any], tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.delenv("VERA_EVAL_API_KEY", raising=False)
+    lj.write_new(tmp_path / "cases.json", frozen)
+    lj.write_new(tmp_path / "outputs.json", outputs)
+
+    code = lj.main(["judge", "--cases", str(tmp_path / "cases.json"), "--outputs", str(tmp_path / "outputs.json"),
+                    "--provider", "groq", "--model", "openai/gpt-oss-120b", "--output", str(tmp_path / "j.json")])
+
+    assert code == 2
+    assert "VERA_EVAL_API_KEY is not set" in capsys.readouterr().err
+    assert not (tmp_path / "j.json").exists()
+
+
+def test_groq_key_never_reaches_artifacts_or_logs(frozen: dict[str, Any], outputs: dict[str, Any], tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(lj.time, "sleep", lambda _: None)
+    served = iter([json.dumps(fixture_judgement("S03")), json.dumps(fixture_judgement("S10"))])
+
+    def opener(request: Any, timeout: float) -> FakeResponse:
+        return groq_opener(next(served), [])(request, timeout)
+
+    lines: list[str] = []
+    judged = lj.judge_cases(frozen, outputs, lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=opener), log=lines.append)
+    lj.write_new(tmp_path / "judgements.json", judged)
+    (tmp_path / "report.md").write_text(lj.render_report(outputs, judged))
+
+    failed = lj.judge_cases(frozen, outputs, lj.GroqProvider(SECRET, "openai/gpt-oss-120b", opener=groq_http_error(
+        401, {"message": f"Invalid API Key: {SECRET}"})), log=lines.append)
+    lj.write_new(tmp_path / "failed.json", failed)
+
+    assert [r["status"] for r in judged["results"]] == ["ok", "ok"] and failed["results"][0]["status"] == "provider_error"
+    for path in tmp_path.iterdir():
+        assert SECRET not in path.read_text(), path.name
+    assert SECRET not in "\n".join(lines) + capsys.readouterr().out
+
+
 def test_fixture_provider_round_trip_and_missing_case() -> None:
     provider = lj.FixtureProvider(FIXTURES)
     assert json.loads(provider.complete("s", "p", "S10"))["case_id"] == "S10"
@@ -420,6 +617,6 @@ def test_reports_have_no_combined_score_or_ranking(frozen: dict[str, Any], outpu
 def test_production_code_never_imports_the_evaluator() -> None:
     for path in (ROOT / "app").rglob("*.py"):
         source = path.read_text()
-        for forbidden in ("llm_judge", "evaluate_vera", "generativelanguage", "VERA_EVAL", "urllib",
+        for forbidden in ("llm_judge", "evaluate_vera", "generativelanguage", "api.groq.com", "VERA_EVAL", "urllib",
                           "import judge_simulator", "from judge_simulator"):
             assert forbidden not in source, f"{path.relative_to(ROOT)} mentions {forbidden}"

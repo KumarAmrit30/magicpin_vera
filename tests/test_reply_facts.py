@@ -104,7 +104,7 @@ def test_availability_outside_the_asked_part_of_day_says_so() -> None:
 
 
 def test_due_date_question_gets_the_due_date() -> None:
-    assert body(RECALL, "When is my cleaning due?").startswith("Your 6 month cleaning is due on 12 Nov 2026.")
+    assert body(RECALL, "When is my cleaning due?").startswith("Aapke liye 6 month cleaning 12 Nov 2026 ko due hai.")
 
 
 def test_appointment_question_without_a_booking_is_honest_and_offers_slots() -> None:
@@ -136,7 +136,7 @@ def test_multi_fact_question_answers_both_with_one_cta() -> None:
 
 
 def test_last_visit_question() -> None:
-    assert body(RECALL, "When did I last come in?").startswith("The last one was on 12 May 2026.")
+    assert body(RECALL, "When did I last come in?").startswith("Last service 12 May 2026 ko hui thi.")
 
 
 def test_price_of_an_item_the_business_has_no_offer_for_is_not_guessed() -> None:
@@ -189,7 +189,7 @@ def test_thresholds_are_not_prices() -> None:
 
 def test_opener_wording_is_preferred_for_plain_facts() -> None:
     assert body(REFILL, "When does it run out?").startswith(
-        "Your medicines (metformin, atorvastatin and telmisartan) run out on 28 Apr 2026."
+        "Aapki medicines (metformin, atorvastatin and telmisartan) 28 Apr 2026 ko khatam hongi."
     )
 
 
@@ -284,10 +284,10 @@ def test_opener_facts_are_tagged_by_kind() -> None:
     state, action, _ = converse(RECALL, [])
     facts = opener_facts(state.conversation_store.get(action.conversation_id))
     assert {f.kind: f.sentence for f in facts} == {
-        K.DUE_DATE: "Your 6 month cleaning is due on 12 Nov 2026.",
-        K.LAST_VISIT: "The last one was on 12 May 2026.",
-        K.PRICE: "Current offer: Dental Cleaning @ \u20b9299.",
-        K.AVAILABILITY: "Open slots: Wed 5 Nov, 6pm or Thu 6 Nov, 5pm.",
+        K.DUE_DATE: "Aapke liye 6 month cleaning 12 Nov 2026 ko due hai.",
+        K.LAST_VISIT: "Last service 12 May 2026 ko hui thi.",
+        K.PRICE: "Abhi Dental Cleaning @ \u20b9299 offer chal raha hai.",
+        K.AVAILABILITY: "Aapke liye slots ready hain: Wed 5 Nov, 6pm or Thu 6 Nov, 5pm.",
     }
 
 

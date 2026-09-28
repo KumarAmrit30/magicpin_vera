@@ -562,6 +562,60 @@ WINBACK_QUESTIONS = {"gyms": "Want to book a session?", "pharmacies": "Want us t
 
 HINDI_PREFS = ("hi", "hi-en mix")
 
+CUSTOMER_PHRASES: dict[str, tuple[str, str]] = {
+    "appointment with service": ("{Your} {} appointment is on {}.", "{Aapka} {} appointment {} ko hai."),
+    "appointment": ("{Your} appointment is on {}.", "{Aapka} appointment {} ko hai."),
+    "appointment tomorrow": ("This is a reminder about {your} appointment tomorrow.", "Kal {aapka} appointment hai."),
+    "refill due": ("{Your} refill is due.", "{Aapki} refill due hai."),
+    "service due on": ("{Your} {} is due on {}.", "{Aapke} liye {} {} ko due hai."),
+    "service due": ("{Your} {} is due.", "{Aapke} liye {} due hai."),
+    "last service": ("The last one was on {}.", "Last service {} ko hui thi."),
+    "medicines run out": ("{Your} medicines ({}) run out on {}.", "{Aapki} medicines ({}) {} ko khatam hongi."),
+    "medicines due": ("{Your} medicines ({}) are due for a refill.", "{Aapki} medicines ({}) ki refill due hai."),
+    "last refill": ("Last refill: {}.", "Last refill {} ko hui thi."),
+    "next visit due": ("{Your} next visit is due on {}.", "{Aapki} next visit {} ko due hai."),
+    "days since last visit": ("It's been {} days since your last visit \u2014 no pressure at all.",
+                              "Aapki last visit ko {} din ho gaye hain \u2014 koi pressure nahi."),
+    "last visit a while ago": ("It's been a while since your last visit on {} \u2014 no pressure at all.",
+                               "Aapki last visit {} ko thi, kaafi time ho gaya \u2014 koi pressure nahi."),
+    "previous focus": ("We're here whenever you want to get back to your {} goals.",
+                       "Jab bhi aap apne {} goals par wapas aana chahein, hum yahan hain."),
+    "trial": ("Following up on your trial on {}.", "Aapka trial {} ko tha \u2014 uske baare mein follow up kar rahe hain."),
+    "days to wedding": ("{} days to go until your wedding on {}.", "{} din baaki hain \u2014 aapki wedding {} ko hai."),
+    "wedding": ("Your wedding is on {}.", "Aapki wedding {} ko hai."),
+    "next step": ("Next step: {}.", "Next step: {}."),
+    "last visit": ("Your last visit with us was on {}.", "Aapki last visit {} ko thi."),
+    "active offer": ("Current offer: {}.", "Abhi {} offer chal raha hai."),
+    "available options": ("Open slots: {}.", "Aapke liye slots ready hain: {}."),
+    "delivery address saved": ("Your delivery address is saved with us.", "Aapka delivery address humare paas saved hai."),
+}
+"""Customer fact sentences as (English, Hinglish). Both keep the same ``{}`` values in the same order, so
+``template_params`` and ``facts_used`` never depend on the language. Greetings and CTAs are not here: they stay
+as they are (CTAs in English, as in case studies 2 and 10). ``{Your}``/``{Aapka}``-style tokens name whose it
+is: the customer, or the child in ``Name (parent: X)`` profiles."""
+
+
+def prefers_hindi(customer: Mapping[str, Any] | None) -> bool:
+    return ((customer or {}).get("identity") or {}).get("language_pref") in HINDI_PREFS
+
+
+def _customer_phrases(possessive: str, *, hinglish: bool) -> Callable[[str], str]:
+    child = None if possessive == "Your" else possessive.removesuffix("'s")
+    if hinglish and child is None:
+        words = {"{Aapka}": "Aapka", "{aapka}": "aapka", "{Aapki}": "Aapki", "{Aapke}": "Aapke"}
+    elif hinglish:
+        words = {"{Aapka}": f"{child} ka", "{aapka}": f"{child} ka", "{Aapki}": f"{child} ki", "{Aapke}": f"{child} ke"}
+    else:
+        words = {"{Your}": possessive, "{your}": "your" if child is None else possessive}
+
+    def phrase(key: str) -> str:
+        text = CUSTOMER_PHRASES[key][hinglish]
+        for token, word in words.items():
+            text = text.replace(token, word)
+        return text
+
+    return phrase
+
 
 def _customer_message(
     writer: TemplateWriter, plan: DecisionPlan, context: CandidateGenerationContext, facts: list[_Fact], taboos: list[str]
@@ -576,6 +630,11 @@ def _customer_message(
 
     greeting, greeting_values, greeting_refs, possessive = _customer_greeting(context)
     writer.add(greeting, *greeting_values, facts=greeting_refs)
+    phrase = _customer_phrases(possessive, hinglish=plan.send_as is SendAs.MERCHANT_ON_BEHALF and prefers_hindi(context.customer))
+
+    def say(key: str, *labels: str) -> None:
+        add(phrase(key), *labels)
+
     has = usable.__contains__
     first_option = _first_option(usable.get("available options"))
     reminder = plan.action is A.SEND_CUSTOMER_REMINDER
@@ -584,55 +643,58 @@ def _customer_message(
 
     if appointment:
         if has("appointment"):
-            add(f"{possessive} {{}} appointment is on {{}}." if has("service") else f"{possessive} appointment is on {{}}.",
-                *(("service", "appointment") if has("service") else ("appointment",)))
+            if has("service"):
+                say("appointment with service", "service", "appointment")
+            else:
+                say("appointment", "appointment")
         else:
-            whose = "your" if possessive == "Your" else possessive
-            writer.add(f"This is a reminder about {whose} appointment tomorrow.", facts=("trigger:kind",))
+            writer.add(phrase("appointment tomorrow"), facts=("trigger:kind",))
     elif refill and not has("medicines"):
-        writer.add(f"{possessive} refill is due.", facts=("trigger:kind",))
+        writer.add(phrase("refill due"), facts=("trigger:kind",))
     elif reminder:
         if has("service due"):
-            add(f"{possessive} {{}} is due on {{}}." if has("due date") else f"{possessive} {{}} is due.",
-                *(("service due", "due date") if has("due date") else ("service due",)))
+            if has("due date"):
+                say("service due on", "service due", "due date")
+            else:
+                say("service due", "service due")
             if has("last service"):
-                add("The last one was on {}.", "last service")
+                say("last service", "last service")
         elif has("medicines"):
             if has("stock runs out"):
-                add(f"{possessive} medicines ({{}}) run out on {{}}.", "medicines", "stock runs out")
+                say("medicines run out", "medicines", "stock runs out")
             else:
-                add(f"{possessive} medicines ({{}}) are due for a refill.", "medicines")
+                say("medicines due", "medicines")
             if has("last refill"):
-                add("Last refill: {}.", "last refill")
+                say("last refill", "last refill")
         elif has("due date"):
-            add(f"{possessive} next visit is due on {{}}.", "due date")
+            say("next visit due", "due date")
     elif plan.action is A.SEND_CUSTOMER_WINBACK:
         if has("days since last visit"):
-            add("It's been {} days since your last visit \u2014 no pressure at all.", "days since last visit")
+            say("days since last visit", "days since last visit")
         elif has("last visit"):
-            add("It's been a while since your last visit on {} \u2014 no pressure at all.", "last visit")
+            say("last visit a while ago", "last visit")
         if has("previous focus"):
-            add("We're here whenever you want to get back to your {} goals.", "previous focus")
+            say("previous focus", "previous focus")
     else:
         if has("trial date"):
-            add("Following up on your trial on {}.", "trial date")
+            say("trial", "trial date")
         elif has("trial completed"):
-            add("Following up on your trial on {}.", "trial completed")
+            say("trial", "trial completed")
         if has("days to wedding") and has("wedding date"):
-            add("{} days to go until your wedding on {}.", "days to wedding", "wedding date")
+            say("days to wedding", "days to wedding", "wedding date")
         elif has("wedding date"):
-            add("Your wedding is on {}.", "wedding date")
+            say("wedding", "wedding date")
         if has("next step"):
-            add("Next step: {}.", "next step")
+            say("next step", "next step")
 
     if has("last visit") and all(ref in greeting_refs or ref == "trigger:kind" for ref in writer.facts):
-        add("Your last visit with us was on {}.", "last visit")
+        say("last visit", "last visit")
     if has("active offer"):
-        add("Current offer: {}.", "active offer")
+        say("active offer", "active offer")
     if has("available options"):
-        add("Open slots: {}.", "available options")
+        say("available options", "available options")
     if has("delivery address saved") and usable["delivery address saved"].text == "yes":
-        writer.add("Your delivery address is saved with us.", facts=(usable["delivery address saved"].ref,))
+        writer.add(phrase("delivery address saved"), facts=(usable["delivery address saved"].ref,))
 
     if plan.cta_type is CTAType.CONFIRMATION:
         if refill:
@@ -667,7 +729,7 @@ def customer_greeting(
     identity = (customer or {}).get("identity") or {}
     business = (merchant.get("identity") or {}).get("name")
     name = identity.get("name") if isinstance(identity.get("name"), str) else ""
-    hello = "Namaste" if identity.get("language_pref") in HINDI_PREFS else "Hi"
+    hello = "Namaste" if prefers_hindi(customer) else "Hi"
     parent = re.fullmatch(r"\s*(.+?)\s*\(parent:\s*(.+?)\)\s*", name)
     refs: list[str] = []
     if parent:
